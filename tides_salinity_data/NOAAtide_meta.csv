@@ -1,0 +1,145 @@
+﻿site_name,site_id,lat,long,prediction
+"   East Key, southern end, Florida Bay",8723752,24.9967,-80.61,Subordinate
+"        Plantation Key, Hawk Channel",8723769,24.9733,-80.55,Subordinate
+"        Yacht Harbor, Cowpens Anchorage, Plantation Key",8723776,24.965,-80.5683,Subordinate
+"        Snake Creek, Hwy. 1 bridge, Windley Key",8723787,24.9517,-80.5883,Subordinate
+"        Snake Creek, USCG Station, Plantation Key",8723786,24.9533,-80.5867,Subordinate
+"        Whale Harbor, Windley Key, Hawk Channel",8723795,24.94,-80.6083,Subordinate
+"        Whale Harbor Channel, Hwy. 1 bridge, Windley Key",8723797,24.9383,-80.61,Subordinate
+"        Upper Matecumbe Key, Hawk Channel",8723814,24.915,-80.6317,Subordinate
+"        Alligator Reef, Hawk Channel",8723861,24.85,-80.6183,Subordinate
+"        Flamingo, Florida Bay",8723644,25.1417,-80.9233,Subordinate
+"        Upper Matecumbe Key, west end, Hawk Channel",8723828,24.8967,-80.6583,Subordinate
+"        Indian Key, Hawk Channel",8723843,24.8767,-80.6767,Subordinate
+"        Shell Key Channel, Florida Bay",8723812,24.9133,-80.66,Subordinate
+"        Lignumvitae Key, NE side, Florida Bay",8723824,24.9033,-80.695,Subordinate
+"        Lignumvitae Key, west side, Florida Bay",8723825,24.9,-80.705,Subordinate
+"        Little Basin, Upper Matecumbe Key, Florida Bay",8723813,24.915,-80.64,Subordinate
+"        Shell Key, northwest side, Lignumvitae Basin",8723807,24.9233,-80.6717,Subordinate
+"        Islamorada, Upper Matecumbe Key, Florida Bay",8723808,24.925,-80.6317,Subordinate
+"        Indian Key Anchorage, Lower Matecumbe Key",8723851,24.8683,-80.7033,Subordinate
+"        Matecumbe Bight, Lower Matecumbe Key, Fla. Bay",8723852,24.865,-80.7167,Subordinate
+"        Matecumbe Harbor, Lower Matecumbe Key, Fla. Bay",8723862,24.8517,-80.74,Subordinate
+"        Channel Two, east, Lower Matecumbe Key, Fla. Bay",8723868,24.845,-80.7483,Subordinate
+"        Channel Two, west side, Hawk Channel",8723869,24.8417,-80.7533,Subordinate
+"        Channel Five, east side, Hawk Channel",8723874,24.8367,-80.7667,Subordinate
+"        Channel Five, west side, Hawk Channel",8723872,24.84,-80.78,Subordinate
+"        Jewfish Hole, Long Key, Florida Bay",8723873,24.8383,-80.7983,Subordinate
+"        Long Key Bight, Long Key",8723879,24.8283,-80.8083,Subordinate
+"        Long Key Lake, Long Key",8723887,24.82,-80.8167,Subordinate
+"        Long Key, western end",8723899,24.8033,-80.85,Subordinate
+"        Conch Key, eastern end",8723906,24.7917,-80.8833,Subordinate
+        Toms Harbor Cut,8723912,24.7833,-80.9067,Subordinate
+"        Duck Key, Hawk Channel",8723927,24.765,-80.9133,Subordinate
+"        Toms Harbor Channel, Hwy. 1 bridge",8723918,24.7767,-80.9233,Subordinate
+"        Grassy Key, north side, Florida Bay",8723921,24.7717,-80.94,Subordinate
+"        Grassy Key, south side, Hawk Channel",8723933,24.755,-80.9583,Subordinate
+"        Fat Deer Key, Florida Bay",8723949,24.7333,-81.0167,Subordinate
+        Vaca Key-Fat Deer Key bridge,8723950,24.73,-81.03,Subordinate
+        Key Colony Beach,8723962,24.7183,-81.0167,Harmonic
+"        VACA KEY, USCG STATION, FLORIDA BAY",8723970,24.711,-81.1065,Harmonic
+"        Boot Key Harbor bridge, Boot Key",8723971,24.7033,-81.105,Subordinate
+"        Sombrero Key, Hawk Channel",8723999,24.6267,-81.1117,Subordinate
+"        Knight Key Channel, Knight Key, Florida Bay",8724008,24.7067,-81.125,Subordinate
+"        Pigeon Key, south side, Hawk Channel",8724032,24.7033,-81.155,Subordinate
+"        Pigeon Key, north side, Florida Bay",8724033,24.705,-81.1567,Subordinate
+"        Molasses Key Channel, Molasses Keys",8724062,24.6833,-81.1917,Subordinate
+        Money Key,8724082,24.6833,-81.2167,Subordinate
+"        Little Duck Key, east end, Hawk Channel",8724093,24.6817,-81.2283,Subordinate
+"        East Bahia Honda Key, south end, Florida Bay",8724094,24.775,-81.2267,Subordinate
+"        Cocoanut Key, Florida Bay",8724098,24.745,-81.2367,Subordinate
+        West Bahia Honda Key,8724129,24.78,-81.2717,Subordinate
+"        Horseshoe Keys, south end",8724139,24.7667,-81.2833,Subordinate
+"        Johnson Keys, south end",8724153,24.7433,-81.3,Subordinate
+"        Johnson Keys, north end",8724172,24.7667,-81.3233,Subordinate
+        Missouri Key-Little Duck Key Channel,8724099,24.68,-81.235,Subordinate
+"        Missouri Key-Ohio Key Channel, west side",8724107,24.6733,-81.2433,Subordinate
+"        Ohio Key-Bahia Honda Key Channel, west side",8724112,24.67,-81.2517,Subordinate
+"        Bahia Honda Key, Bahia Honda Channel",8724138,24.655,-81.2817,Subordinate
+"        Big Pine Key, Spanish Harbor",8724178,24.6483,-81.33,Subordinate
+"        Big Pine Key, Doctors Arm, Bogie Channel",8724201,24.69,-81.3567,Subordinate
+"        Big Pine Key, Bogie Channel Bridge",8724193,24.6967,-81.3483,Subordinate
+"        No Name Key, east side, Bahia Honda Channel",8724168,24.6983,-81.3183,Subordinate
+"        Little Pine Key, south end",8724154,24.7133,-81.3033,Subordinate
+"        Porpoise Key, Big Spanish Channel",8724196,24.7183,-81.3517,Subordinate
+"        Water Key, west end, Big Spanish Channel",8724189,24.74,-81.3417,Subordinate
+"        Mayo Key, Big Spanish Channel",8724205,24.7333,-81.3617,Subordinate
+"        Little Pine Key, north end",8724177,24.75,-81.3283,Subordinate
+"        Big Pine Key, northeast shore",8724226,24.7283,-81.3867,Subordinate
+"        Crawl Key, Big Spanish Channel",8724199,24.7567,-81.3583,Subordinate
+"        Big Pine Key, north end",8724231,24.745,-81.395,Subordinate
+"        Annette Key, north end, Big Spanish Channel",8724229,24.7583,-81.39,Subordinate
+"        Little Spanish Key, Spanish Banks",8724209,24.7733,-81.3683,Subordinate
+        Big Spanish Key,8724246,24.7883,-81.4117,Subordinate
+"        Munson Island, Newfound Harbor Channel",8724238,24.6233,-81.4033,Subordinate
+"        Ramrod Key, Newfound Harbor",8724239,24.65,-81.4033,Subordinate
+"        Middle Torch Key, Torch Ramrod Channel",8724237,24.6617,-81.4017,Subordinate
+"        Little Torch Key, Torch Channel",8724232,24.665,-81.395,Subordinate
+"        Big Pine Key, Newfound Harbor Channel",8724215,24.6517,-81.375,Subordinate
+"        Big Pine Key, Coupon Bight",8724192,24.6517,-81.35,Subordinate
+"        Little Torch Key, Pine Channel Bridge, south side",8724223,24.665,-81.3867,Subordinate
+"        Little Torch Key, Pine Channel Bridge, south side",8724224,24.665,-81.3867,Subordinate
+"        Big Pine Key, Pine Channel Bridge, south side",8724213,24.6683,-81.3717,Subordinate
+"        Big Pine Key, Pine Channel Bridge, north side",8724211,24.67,-81.3683,Subordinate
+"        Big Pine Key, west side, Pine Channel",8724227,24.69,-81.3833,Subordinate
+"        Howe Key, south end, Harbor Channel",8724243,24.725,-81.4067,Subordinate
+"        Big Torch Key, Harbor Channel",8724274,24.7367,-81.4433,Subordinate
+"        Water Keys, south end, Harbor Channel",8724273,24.7467,-81.45,Subordinate
+"        Howe Key, northwest end",8724257,24.7583,-81.4283,Subordinate
+"        Summerland Key, Niles Channel South",8724266,24.6517,-81.435,Subordinate
+"        Summerland Key, Niles Channel Bridge",8724267,24.66,-81.4367,Subordinate
+"        Ramrod Key, Niles Channel Bridge",8724255,24.66,-81.4233,Subordinate
+"        Big Torch Key, Niles Channel",8724264,24.705,-81.4333,Subordinate
+"        Knockemdown Key, north end",8724302,24.715,-81.4783,Subordinate
+"        Raccoon Key, east side",8724311,24.7417,-81.4833,Subordinate
+"        Content Keys, Content Passage",8724307,24.79,-81.4833,Subordinate
+"        Key Lois, southeast end",8724293,24.6067,-81.47,Subordinate
+"        Sugarloaf Key, east side, Tarpon Creek",8724327,24.6283,-81.51,Subordinate
+"        Gopher Key, Cudjoe Bay",8724306,24.6417,-81.485,Subordinate
+"        Sugarloaf Key, Pirates Cove",8724326,24.6533,-81.515,Subordinate
+"        Cudjoe Key, Cudjoe Bay",8724313,24.66,-81.4917,Subordinate
+"        Summerland Key, southwest side, Kemp Channel",8724276,24.65,-81.4467,Subordinate
+        Kemp Channel Viaduct,8724292,24.6617,-81.4683,Subordinate
+"        Cudjoe Key, north end, Kemp Channel",8724328,24.7,-81.505,Subordinate
+"        Sugarloaf Key, northeast side, Bow Channel",8724347,24.6717,-81.5333,Subordinate
+"        Cudjoe Key, Pirates Cove",8724332,24.6617,-81.515,Subordinate
+"        Sugarloaf Key, north end, Bow Channel",8724368,24.6933,-81.555,Subordinate
+"        Pumpkin Key, Bow Channel",8724373,24.7167,-81.5617,Subordinate
+"        Sawyer Key, outside, Cudjoe Channel",8724370,24.7583,-81.5617,Subordinate
+"        Sawyer Key, inside, Cudjoe Channel",8724369,24.7583,-81.5617,Subordinate
+        Upper Sugarloaf Sound,,,,
+            Perky,8724378,24.6483,-81.57,Subordinate
+            Park Channel Bridge,8724353,24.655,-81.54,Subordinate
+            North Harris Channel,8724367,24.6533,-81.5533,Subordinate
+            Tarpon Creek,8724334,24.63,-81.5167,Subordinate
+"        Johnston Key, southwest end, Turkey Basin",8724397,24.71,-81.5933,Subordinate
+"        Snipe Keys, southeast end, Inner Narrows",8724409,24.6583,-81.6083,Subordinate
+"        Snipe Keys, Middle Narrows",8724427,24.6667,-81.63,Subordinate
+"        Snipe Keys, Snipe Point",8724463,24.6917,-81.6733,Subordinate
+"        Waltz Key, Waltz Key Basin",8724448,24.6467,-81.6533,Subordinate
+"        Duck Key Point, Duck Key, Waltz Key Basin",8724474,24.6233,-81.685,Subordinate
+"        O'Hara Key, north end, Waltz Key Basin",8724441,24.6167,-81.645,Subordinate
+"        Saddlebunch Keys, Channel No. 5",8724423,24.6117,-81.6233,Subordinate
+"        Saddlebunch Keys, Channel No. 4",8724417,24.615,-81.6167,Subordinate
+"        Saddlebunch Keys, Channel No. 3",8724405,24.6233,-81.6033,Subordinate
+"        Bird Key, Similar Sound",8724436,24.5883,-81.6383,Subordinate
+"        Shark Key, southeast end, Similar Sound",8724438,24.6033,-81.645,Subordinate
+"        Saddlebunch Keys, Similar Sound",8724422,24.6,-81.6217,Subordinate
+"        Big Coppitt Key, northeast side, Waltz Key Basin",8724489,24.6017,-81.655,Subordinate
+"        Rockland Key, Rockland Channel Bridge",8724459,24.5917,-81.67,Subordinate
+"        Boca Chica Key, Long Point",8724485,24.6033,-81.6983,Subordinate
+"        Channel Key, west side",8724507,24.6033,-81.725,Subordinate
+        Boca Chica Marina,8724493,24.575,-81.7083,Harmonic
+"        Boca Chica Key, Southwest end",8724499,24.5633,-81.7133,Subordinate
+        Boca Chica Channel Bridge,8724503,24.5767,-81.7217,Subordinate
+        Key Haven - Stock Island Channel,8724517,24.58,-81.7383,Subordinate
+        Cow Key Channel,8724527,24.57,-81.75,Subordinate
+"        Sigsbee Park, Garrison Bight Channel",8724542,24.585,-81.775,Subordinate
+"        Fleming Key, north end",8724571,24.5917,-81.795,Harmonic
+"        Riveria Canal, Key West",8724529,24.565,-81.7517,Subordinate
+"        Key West, south side, White Street Pier",8724557,24.545,-81.7833,Subordinate
+        KEY WEST,8724580,24.5557,-81.8079,Harmonic
+"        Sand Key Lighthouse, Sand Key Channel",8724635,24.4533,-81.8783,Harmonic
+"        Garden Key, Dry Tortugas",8724697,24.6267,-82.8717,Subordinate
+"        Loggerhead Key, Dry Tortugas",8724698,24.6317,-82.92,Harmonic
+        Smith Shoal Light,8724671,24.7183,-81.9215,Harmonic
