@@ -1,0 +1,3411 @@
+---
+title: "eDNA Spiny Lobster All R analysis"
+author: "Aiko Abo Dominguez"
+date: "2025-06-09"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Downloads
+installing and loading packages
+```{r installing and loading packages}
+# Function to install CRAN packages if not already installed
+install_if_missing <- function(pkgs) {
+  installed <- installed.packages()[, "Package"]
+  to_install <- setdiff(pkgs, installed)
+  if (length(to_install) > 0) {
+    install.packages(to_install)
+  }
+}
+
+
+# CRAN packages
+install_if_missing(c("ggplot2", "ape", "vegan", "tidyverse", "sf", "mapview","leaflet","webshot2","car","rstatix","RColorBrewer","ggpmisc"))
+
+# devtools (for GitHub installs)
+install_if_missing("devtools")
+library(devtools)
+
+# GitHub packages
+if (!"pairwiseAdonis" %in% installed.packages()[, "Package"]) {
+  install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+}
+
+if (!"qiime2R" %in% installed.packages()[, "Package"]) {
+  install_github("jbisanz/qiime2R")
+}
+
+devtools::install_github("kassambara/ggpubr")
+
+# Bioconductor setup
+if (!"BiocManager" %in% installed.packages()[, "Package"]) {
+  install.packages("BiocManager")
+}
+
+# Install Bioconductor packages only if not present
+bioc_pkgs <- c("limma", "phyloseq", "microbiome", "ANCOMBC")
+for (pkg in bioc_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    BiocManager::install(pkg)
+  }
+}
+
+#install microViz
+install.packages(
+  "microViz",
+  repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+)
+
+library(qiime2R)
+library(sf)
+library(mapview)
+library(tidyverse)
+library("phyloseq")
+library("ggplot2")
+library("ape")
+library("vegan")
+library("leaflet")
+library("webshot2")
+library(ggpmisc)
+library(ggpubr)
+library(RColorBrewer)
+library(car)
+library(rstatix)
+library(tidyr)
+library(dplyr)
+library(tibble)
+library("pairwiseAdonis"); packageVersion("pairwiseAdonis")
+library(limma)
+library(microbiome)  
+library(ANCOMBC)
+library(microViz)
+```
+
+# Importing data and metadata editing
+
+##Editing metadata file
+
+```{r Importing and editing metadata file}
+#import file
+metadata <- read.csv("/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/metadata/sample_metadata_PAV1_eDNA.csv")
+
+#change the name of the first column
+metadata$sample_id_old <- metadata$sample.id
+colnames(metadata)[1] <- "sample_id"
+
+#change "don" column to "site ID". "don" is what the FWC labels these sites as.
+colnames(metadata)[4] <- "site_id"
+
+#make function to truncate ID name
+truncate_before_second_underscore <- function(x) {
+  sapply(strsplit(x, "_"), function(parts) paste(parts[1:2], collapse = "_"))
+}
+
+metadata$sample_id <- truncate_before_second_underscore(metadata$sample_id)
+#View(metadata)
+
+#set column 1 as row names
+rownames(metadata) <- metadata$sample_id
+
+#make sure it is a dataframe
+metadata <- as.data.frame(metadata)
+#View(metadata)
+
+#setting variables to be numeric, as appropriate
+metadata$Lat <- as.numeric(metadata$Lat)
+metadata$Long <- as.numeric(metadata$Long)
+metadata$Total_Lobsters <- as.numeric(metadata$Total_Lobsters)
+metadata$EstimatedBiomass <- as.numeric(metadata$EstimatedBiomass)
+
+str(metadata)
+
+# Add a  column sample_id_location by pasting site_id and Replicate_new
+metadata$Replicate_new <- sub(".*_", "", metadata$Replicate)
+metadata$sample_id_location <- paste(metadata$site_id, metadata$Replicate_new, sep = "_")
+
+#add column for sample site ID based on latitude
+sites <- unique(metadata$Long)
+
+#sites
+metadata <- metadata %>%
+  mutate(site_letter = ifelse(Long==sites[1], "A",
+                   ifelse(Long==sites[2], "B",
+                   ifelse(Long==sites[3], "C",
+                   ifelse(Long==sites[4], "D",
+                   ifelse(Long==sites[5], "E",
+                   ifelse(Long==sites[6], "F", 
+                   ifelse(Long==sites[7],"G",
+                   ifelse(Long==sites[8], "H",
+                   ifelse(Long==sites[9], "I",
+                   ifelse(Long==sites[10], "J", 
+                   ifelse(Long==sites[11], "K",
+                   ifelse(Long==sites[12], "L", NA)))))))))))))
+unique(metadata$site_id)
+#View(metadata)
+
+#avg lobster mass
+metadata$avg_lobster_mass <- metadata$EstimatedBiomass/metadata$Total_Lobsters
+mean(metadata$avg_lobster_mass)
+sd(metadata$avg_lobster_mass)
+```
+
+
+
+Exporting coordinates
+```{r exporting coordinates}
+
+coordinates <- data.frame(
+  site_id = unique(metadata$site_id),
+  lat = unique(metadata$Lat),
+  long = unique(metadata$Long)
+)
+
+write.csv(coordinates,file="PAV1_eDNA_sample_site_coordinates.csv")
+```
+
+
+
+##Importing ASV sequences, taxa table, and phylogenetic tree
+```{r Importing ASV sequences, taxa table, and phylogenetic tree}
+#sequence table from dada2 of forward reads, only eukaryotes
+seq_qza <- read_qza("/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/QIIME2_code/seq_ASVs_lobC16S_euks_fwd.qza")
+seq_table <- as.data.frame(seq_qza$data)
+
+
+#ASV table from dada2 of forward reads, only eukaryotes
+ASV_qza <- read_qza("/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/QIIME2_code/table_ASVs_lobC16S_euks_fwd.qza")
+ASV_table <- as.matrix(ASV_qza$data)
+#View(ASV_table)
+
+#truncating ASV column names to match "metadata" truncated sample names
+colnames(ASV_table) <- truncate_before_second_underscore(colnames(ASV_table))
+colnames(ASV_table) 
+metadata[,"sample_id"]
+
+#check that it worked
+rownames(metadata) <- metadata$sample_id
+all(rownames(metadata)%in%colnames(ASV_table))
+
+#import taxa from dada2 of forward reads
+taxa_qza <- read_qza("/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/QIIME2_code/taxonomy_fwd.qza")
+taxa_table <- taxa_qza$data %>% select(-Consensus)
+taxa_table <- taxa_table %>%
+  as_tibble() %>%
+  separate(Taxon, sep=";", c("Superkingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) %>%
+  arrange(Feature.ID) %>%
+  mutate(ASV = paste('ASV',1:n(), sep="_")) %>%
+  column_to_rownames("Feature.ID") %>%
+  as.matrix()
+
+#View(taxa_table)
+
+#Importing phylogenetic tree
+tree_file_qza <-read_qza("/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/QIIME2_code/rooted_masked_aligned_seq_ASVs_lobC16S_euks_fwd.qza")
+tree_file<- tree_file_qza$data
+#View(tree_file)
+
+```
+
+
+
+# Phyloseq generation
+Generating phyloseq
+```{r Generating phyloseq}
+#generating object
+ps <- phyloseq(otu_table(t(ASV_table), taxa_are_rows=FALSE),
+              sample_data(metadata), 
+              tax_table(taxa_table), 
+              tree_file)
+ps
+```
+
+
+
+# Relative abundance
+
+##Filter ps
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05 length.
+ps
+#SELECT FILTER
+ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+Identifying for NAs in ps filtered by taxonomic rank and turned into a df
+```{r Identify NAs}
+
+ps_na = transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  psmelt()
+
+order_NA <- subset(ps_na, Order=="NA")
+family_NA <- subset(ps_na, Family=="NA")
+genus_NA <- subset(ps_na, Genus=="NA")
+dim(order_NA)
+dim(family_NA)
+dim(genus_NA)
+
+#View(family_NA)
+
+#ASVs that are NA in order, but are not in genus
+setdiff(order_NA$OTU,genus_NA$OTU)
+
+#ASVs that are NA genus, but not order
+setdiff(genus_NA$OTU,order_NA$OTU)
+
+#this ASV is not in Order, but is in Genus
+sum(genus_NA$OTU=="a9d4ae9f0286fe9bdb3881218ea6b4c1")
+```
+
+Filter "NAs" from taxa table
+```{r Remove 'NA' from ps}
+#adding back Order to taxa missing it, had to look up by hand
+taxa_table["a9d4ae9f0286fe9bdb3881218ea6b4c1", "Order"] <- "Neotaenioglossa"
+taxa_table["8ab5f93e9ac490a760599fb46ab9f46a", "Order"] <- "Hubrechtiiformes"
+
+```
+
+
+##Calculate relative abundance before plotting
+Relative abundance computed using custom function, sample-wise (compositional data) for filtered ps (phyloseq object)
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level
+ps_ra = transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+tax_glom("Phylum") %>% #select taxonomic rank
+  psmelt() 
+ 
+#View(ps_ra)
+dim(ps_ra)
+```
+
+##Plotting
+###Relative abundance of all samples, by site id
+
+Set colors for graph
+```{r Set relative abundance graph colors}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))(nb.cols)
+
+```
+
+
+Making relative abundance graph of orders present
+```{r Plot relative abundance}
+RA_sup = plot_ps %>%
+  subset(Abundance >0.001) %>% #filter for abundance
+  
+  #create plot
+  ggplot(  
+         aes(x = Sample, y=Abundance, 
+             fill=Phylum)) + #fill is  taxonomic rank
+  
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values = mycolors) +
+  guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+  theme_classic() + #theme
+  facet_grid(.~site_id, scales="free") + 
+  
+  #text sizes
+  theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+  ylab("Relative Abundance") +
+  xlab("Sample")
+
+RA_sup
+ggsave('Phylum_ra_by_siteID_lobster_eDNA.png', plot=RA_sup,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+
+
+###Relative abundance of all samples, by Latitude
+
+```{r Set relative abundance graph colors}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))(nb.cols)
+
+```
+
+Making relative abundance graph of taxa present
+```{r Plot relative abundance}
+
+RA_sup = plot_ps %>%
+  subset(Abundance >0.001) %>% #filter for abundance
+  
+  #create plot
+  ggplot(  
+         aes(x = Sample, y=Abundance, 
+             fill=Phylum)) + #fill is  taxonomic rank
+  
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values = mycolors) +
+  guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+  theme_classic() + #theme
+  facet_grid(.~Lat, scales="free") + #separate by lattidue ("Lat")
+  
+  #text sizes
+  theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+  ylab("Relative Abundance") +
+  xlab("Sample")
+
+RA_sup
+ggsave('Phylum_ra_by_Lattitude_lobster_eDNA.png', plot=RA_sup,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+
+###Relative abundance of all samples, by site type
+
+Set colors for graph
+```{r Set relative abundance graph colors}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Family)) #set taxonomic rank
+nb.cols
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))
+
+```
+
+Making relative abundance graph of taxa present
+```{r Plot relative abundance}
+
+
+    RA_sup = plot_ps %>%
+      
+      subset(Abundance >0.001) %>% #filter for abundance
+      ggplot(  
+             aes(x = sample_id_location, y=Abundance, 
+                 fill=Family)) + #fill is  taxonomic rank
+      
+      geom_bar(stat="identity", position="fill") +
+      scale_fill_manual(values = mycolors(nb.cols)) +
+      guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+      theme_classic() + #theme
+      facet_grid(. ~ site_type, scales="free_x",space="free_x") + 
+      
+      #text sizes
+      theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+      
+      ylab("Relative Abundance") +
+      xlab("Sample")
+
+RA_sup
+ggsave('Family_ra_by_site_PAV1_eDNA.png', plot=RA_sup,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+
+
+##nLobster and nPorifera
+
+
+###Filtering and calculations
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 
+#SELECT FILTER. I chose 0.05 length.
+ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level
+ps_ra_porifera <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Phylum") %>% #must match the other RA plot 
+  psmelt() %>%
+  subset(Phylum == "Porifera", 
+         select = c(OTU, sample_id_location, Total_Lobsters_ren, Abundance,Superkingdom,Phylum))
+
+
+View(ps_ra_porifera)
+dim(ps_ra_porifera)
+```
+
+###Check normality
+log transform
+```{r}
+ps_ra_porifera$logAbundance <- log(ps_ra_porifera$Abundance)
+```
+
+
+Shapiro
+```{r}
+#create vector with unique Lobster counts
+lobsters <- unique(ps_ra_porifera$Total_Lobsters_ren)
+lobsters
+
+#calculate the # of Shapiro tests to be run
+ntests <-length(lobsters)
+
+#create empty df to store shapiro results
+shapiro_all <- data.frame(nLob = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+
+#determine normality using Shapiro Wilk test for relative abundance values of Porifera 
+for (i in 1:ntests) {
+  #draw qq plot
+  qqPlot(ps_ra_porifera$Abundance[ps_ra_porifera$nLob==lobsters[i]])
+  #run shapiro test
+  shapiro<-shapiro_test(ps_ra_porifera$Abundance[ps_ra_porifera$nLob==lobsters[i]])
+  shapiro
+  #store lobster count for that particular test
+  shapiro_all$nLob[i] <- as.character(lobsters[i])
+  #store w statistic for that particular test
+  shapiro_all$w_stat[i] <- unname(shapiro$statistic)
+   #store p val for that particular test
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+  #add stars to make interpreting results easier
+  if (shapiro$p.value <= 0.01) {
+    shapiro_all$sig[i] <- "**"
+  } else if (shapiro$p.value <= 0.05) {
+    shapiro_all$sig[i] <- "*"
+  } else {
+    shapiro_all$sig[i] <- ""
+  }
+}
+
+shapiro_all
+```
+
+###Linear model and plotting (no check for normality)
+Convert to numeric for lm
+```{r}
+ps_ra_porifera$Total_Lobsters_ren <- as.numeric(ps_ra_porifera$Total_Lobsters_ren)
+```
+
+Create color palette
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot linear model
+```{r}
+alpha <- ps_ra_porifera %>%
+  ggplot(aes(x = Abundance, y =  Total_Lobsters_ren
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) + #size of points
+  geom_smooth(method = 'lm', color = "black") + #line and test type
+  
+  # Add R^2 and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.25,      # 25% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  #add equation of regression line
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.3,          # 30% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  #visual customizations
+  #scale_y_continuous(limits = c(0, 1)) +
+  #scale_color_manual(color="black") +
+  ylab("Number of lobsters") +
+  xlab("Porifera relative abundance") +
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  ) +
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+ggsave('porifera_lobster_lm_PAV1_eDNA.png', plot=alpha,
+       width = 7,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+##nBlocks and nPorifera 
+
+###Filtering and calculations
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05 when making my plots
+ps
+#SELECT FILTER
+#ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level. Goes to Order level. 
+ps_ra_porifera <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Order") %>% 
+  psmelt() %>%
+  subset(Phylum == "Porifera" & site_type == "Block", 
+         select = c(OTU, sample_id_location, nBlocks, Abundance,Superkingdom,Phylum,Class,Order))
+
+
+#View(ps_ra_porifera)
+dim(ps_ra_porifera)
+```
+
+###Check normality
+log transform
+```{r}
+ps_ra_porifera$logAbundance <- log(ps_ra_porifera$Abundance)
+```
+
+
+Shapiro
+```{r}
+#create vector with unique Block counts
+blocks <- unique(ps_ra_porifera$nBlocks)
+blocks
+
+#calculate the # of Shapiro tests to be run
+ntests <-length(blocks)
+
+#create empty df to store shapiro results
+shapiro_all <- data.frame(nBlocks = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+
+#determine normality using Shapiro Wilk test for relative abundance values of Porifera 
+for (i in 1:ntests) {
+  #draw qq plot
+  qqPlot(ps_ra_porifera$Abundance[ps_ra_porifera$nBlocks==blocks[i]])
+  #run shapiro test
+  shapiro<-shapiro_test(ps_ra_porifera$Abundance[ps_ra_porifera$nBlocks==blocks[i]])
+  shapiro
+  #store Block count for that particular test
+  shapiro_all$nBlocks[i] <- as.character(blocks[i])
+  #store W statistic for that particular test
+  shapiro_all$w_stat[i] <- unname(shapiro$statistic)
+  #store p value for that particular test
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+  #add stars to make interpreting results easier
+  if (shapiro$p.value <= 0.01) {
+    shapiro_all$sig[i] <- "**"
+  } else if (shapiro$p.value <= 0.05) {
+    shapiro_all$sig[i] <- "*"
+  } else {
+    shapiro_all$sig[i] <- ""
+  }
+}
+
+shapiro_all
+```
+
+###Linear model and plotting
+Convert to numeric for lm
+```{r}
+ps_ra_porifera$nBlocks <- as.numeric(ps_ra_porifera$nBlocks)
+```
+
+select colors
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Run and plot linear regression model
+```{r}
+alpha <- ps_ra_porifera %>%
+  ggplot(aes(x = nBlocks, y = Abundance
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', color = "black") +
+  
+  # Add R² and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.25,      # 25% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  #Add regression line equation
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.3,          # 30% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  
+  #visual customizations
+  scale_y_continuous(limits = c(0, 1)) +
+ # scale_color_manual(color="black") +
+  ylab("Porifera relative abundance") +
+  xlab("Number of blocks") +
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 24),
+    axis.text.y = element_text(size = 24),
+    axis.title.x = element_text(size = 28),
+    axis.title.y = element_text(size = 28)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+ggsave('biggerporifera_blocks_lm_PAV1_eDNA.png', plot=alpha,
+       width = 7,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+##nBlocks and nDecapoda 
+
+###Filtering and calculations
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I selected 0.05 length
+ps
+
+#SELECT FILTER
+#ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level
+ps_ra_deca <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Order") %>% 
+  psmelt() %>%
+  subset(Order == "Decapoda" & site_type == "Block", 
+         select = c(OTU, sample_id_location, nBlocks, Abundance,Superkingdom,Phylum,Class,Order))
+
+View(ps_ra_deca)
+dim(ps_ra_deca)
+```
+
+###Check normality
+
+Shapiro
+```{r}
+#create vector with unique Block counts
+blocks <- unique(ps_ra_deca$nBlocks)
+blocks
+
+#calculate the # of Shapiro tests to be run
+ntests <-length(blocks)
+
+#create empty df to store shapiro results
+shapiro_all <- data.frame(nBlocks = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+
+#determine normality using Shapiro Wilk test for relative abundance values of Decapoda 
+for (i in 1:ntests) {
+  qqPlot(ps_ra_deca$Abundance[ps_ra_deca$nBlocks==blocks[i]])
+  shapiro<-shapiro_test(ps_ra_deca$Abundance[ps_ra_deca$nBlocks==blocks[i]])
+  shapiro
+  shapiro_all$nBlocks[i] <- as.character(blocks[i])
+  shapiro_all$w_stat[i] <- unname(shapiro$statistic)
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+#add stars to make interpreting results easier
+  if (shapiro$p.value <= 0.01) {
+    shapiro_all$sig[i] <- "**"
+  } else if (shapiro$p.value <= 0.05) {
+    shapiro_all$sig[i] <- "*"
+  } else {
+    shapiro_all$sig[i] <- ""
+  }
+}
+
+shapiro_all
+```
+
+###Linear model and plotting
+Convert to numeric for lm
+```{r}
+ps_ra_deca$nBlocks <- as.numeric(ps_ra_deca$nBlocks)
+```
+
+Create color palette
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plotting linear regression of relative abundance of Decapoda vs Block count
+```{r}
+alpha <- ps_ra_deca %>%
+  ggplot(aes(x = nBlocks, y = Abundance
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', color = "black") +
+  
+  # Add R² and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.55,      # 55% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  # Add equation for regression line
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.6,          # 60% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+ #  scale_y_continuous(limits = c(0, NA)) +
+ # scale_color_manual(color="black") +
+  ylab("Decapoda relative abundance") +
+  xlab("Number of blocks") +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.2)+
+geom_hline(yintercept = 0, color = "black", linewidth = 0.2)+
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+ggsave('decapoda_blocks_lm_PAV1_eDNA.png', plot=alpha,
+       width = 7,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+
+##nPorifera and nDecapoda 
+
+###Filtering and calculations
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05 length.
+ps
+#SELECT FILTER
+#ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#create relative abundance df of only ASVs where Phylum is Porifera
+ps_ra_dec_por <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Phylum") %>% #combine to the order level
+  psmelt() %>%
+  subset(Phylum %in% c("Porifera", "Arthropoda"), 
+         select = c(OTU, sample_id_location, Abundance,Superkingdom,Phylum))
+
+#View(ps_ra_dec_por)
+dim(ps_ra_dec_por)
+```
+
+
+Select samples with both Porifera and decapoda detected 
+```{r}
+# Step 1: Identify samples that have *both* Porifera and Arthropoda present
+samples_dec_por <- ps_ra_dec_por %>%
+  # Keep only rows where the Phylum is either Porifera or Arthropoda
+  filter(Phylum %in% c("Porifera", "Arthropoda")) %>%
+  # Group by sample ID (with location)
+  group_by(sample_id_location) %>%
+  # Count how many *distinct phyla* are present in each sample
+  summarise(phylum_count = n_distinct(Phylum)) %>%
+  # Keep only samples that have both (i.e., 2 distinct phyla)
+  filter(phylum_count == 2) %>%
+  # Extract the sample IDs into a vector
+  pull(sample_id_location)
+
+# Step 2: Filter the main dataset to include only those samples with both phyla
+ra_both <- ps_ra_dec_por %>%
+  # Keep only the selected samples
+  filter(sample_id_location %in% samples_dec_por) %>%
+  # Reshape the data to wide format: separate columns for Porifera and Arthropoda abundances
+  pivot_wider(names_from = Phylum, values_from = Abundance)
+
+# Step 3: Summarize the abundance of each phylum in each sample
+ra_both_summary <- ra_both %>%
+  # Group by sample
+  group_by(sample_id_location) %>%
+  # Sum the abundances for Porifera and Arthropoda
+  summarise(
+    Porifera = sum(Porifera, na.rm = TRUE),
+    Arthropoda = sum(Arthropoda, na.rm = TRUE),
+    .groups = "drop"  # Drop grouping after summarising
+  )
+
+```
+
+
+###Linear model and plotting (No check for normal dist)
+
+Create color palette
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Graph linear regression
+```{r}
+alpha <- ra_both_summary %>%
+  ggplot(aes(x = Porifera, 
+             y = Arthropoda
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', color = "black") +
+  
+  # Add R² and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.7,      # 70% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  #Add linear regression equation
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.6,          # 60% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  
+  
+  #Visual adjustments
+  coord_cartesian(xlim = c(0, 0.26))+
+  
+  ylab("Decapoda relative abundance") +
+  xlab("Porifera relative abundance") +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.2)+
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.2)+
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+ggsave('decapoda_porifera_lm_PAV1_eDNA.png', plot=alpha,
+       width = 7,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+
+#Beta diversity calculations
+
+##Beta diversity Natural vs Block
+Filter all ps taxa for NAs
+```{r}
+ps_NArm <- ps %>%
+  subset_taxa(Superkingdom != "Unassigned")
+#%>% subset_taxa(Phylum != "NA")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05
+
+#select filter
+#ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+CLR transformation for filtered ps for PERMANOVA and RDA
+
+```{r CLR transformation}
+ps_clr <- microbiome::transform(ps_filter, 'clr')
+ps_clr
+```
+
+Compute euclidian distance matrix based on the OTU/ASV table for PERMANOVA.
+```{r Create distance matrix}
+dis <- vegdist(otu_table(ps_clr), method ="euclidean")
+#test homogeneity of group dispersions (variances).
+mod <- betadisper(dis, sample_data(ps_clr)$site_type) #changed from site_id to Lat
+mod
+## Permutation test for F
+permutest(mod)
+```
+
+PERMANOVA 
+```{r Perform adnois}
+#convert meta data to dataframe
+df_clr= as(sample_data(ps_clr), "data.frame")
+colnames(df_clr)
+
+#running adonis2
+adonis2(otu_table(ps_clr) ~ site_type, 
+       data =df_clr, permutations = 999, 
+         method = "euc")
+```
+
+Perform RDA
+```{r RDA}
+ps.ord_clr <- ordinate(ps_clr, "RDA", "euclidean")
+```
+
+Choose RDA plot colors
+```{r Select RDA plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c("red", "blue"))
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+RDA of subset of sites 2,7,14,17,11
+```{r}
+#subset to sites 2,7,14,17,11
+ps_clr_sub <- subset_samples(ps_clr, site_id %in% c("2","7","14","17","11"))
+  
+ps.ord_clr_sub <- ps.ord_clr <- ordinate(ps_clr_sub, "RDA", "euclidean")
+  
+beta = plot_ordination(ps_clr_sub, ps.ord_clr_sub,color="site_type") +
+       scale_color_manual(values=mycolors(2), labels=c("Block","Natural")) +
+       theme_classic() +
+       theme(legend.text =element_text(size=8)) +
+       theme(legend.title = element_text(size=10)) +
+       theme(axis.title.x = element_text(size = 10)) +
+       theme(axis.title.y = element_text(size = 10)) +
+       theme(axis.text.x = element_text(size =8)) +
+       theme(axis.text.y = element_text(size =8)) +
+       labs(color='Site type') +
+       geom_text(aes(label=site_id), hjust = 0, nudge_x = 0.1, size=2)
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+ggsave('RDA_by_site_type_ra_PAV1_eDNA.png', plot=beta,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures")
+```
+
+Plot RDA
+```{r Plot RDA}
+
+beta = plot_ordination(ps_clr, ps.ord_clr,color="site_type") +
+       scale_color_manual(values=mycolors(2), labels=c("Block","Natural")) +
+       theme_classic() +
+       theme(legend.text =element_text(size=8)) +
+       theme(legend.title = element_text(size=10)) +
+       theme(axis.title.x = element_text(size = 10)) +
+       theme(axis.title.y = element_text(size = 10)) +
+       theme(axis.text.x = element_text(size =8)) +
+       theme(axis.text.y = element_text(size =8)) +
+       labs(color='Site type')# +
+      # geom_text(aes(label=site_type), hjust = 0, nudge_x = 0.1, size=2)
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+ggsave('RDA_by_site_type_ra_PAV1_eDNA.png', plot=beta,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures")
+
+```
+
+
+##Beta diversity sites 4 and 5
+Filter all ps taxa for NAs
+```{r}
+
+ps_NArm <- ps %>%
+  subset_taxa(Kingdom != "Unassigned")
+#%>% subset_taxa(Phylum != "NA")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+CLR transformation for filtered ps for PERMANOVA and RDA
+
+```{r CLR transformation}
+ps_clr <- microbiome::transform(ps_filter, 'clr')
+ps_clr
+```
+
+Compute euclidian distance matrix based on the OTU/ASV table for PERMANOVA.
+
+```{r Create distance matrix}
+dis <- vegdist(otu_table(ps_clr), method ="euclidean")
+#test homogeneity of group dispersions (variances).
+mod <- betadisper(dis, sample_data(ps_clr)$Lat) #changed from site_id to Lat
+mod
+## Permutation test for F
+permutest(mod)
+```
+
+
+PERMANOVA 
+```{r Perform adnois}
+#convert meta data to dataframe
+df_clr= as(sample_data(ps_clr), "data.frame")
+colnames(df_clr)
+
+#subset sites 4 and 5
+df_clr_4_5 <- df_clr[]
+
+#running adonis2
+adonis2(otu_table(ps_clr) ~ site_type, 
+       data =df_clr, permutations = 999, 
+         method = "euc")
+
+#pairwise adonis 
+devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+library(pairwiseAdonis)
+
+pairwise_adonis <- pairwise.adonis2(otu_table(ps_clr) ~ Don,
+                 data=df_clr, permutations=999,
+                 method = "euc")
+
+#pairwise adonis using bray curtis
+ps_rel <- microbiome::transform(ps,"compositional")
+df_rel= as(sample_data(ps_rel), "data.frame")
+
+dist_bray <- vegdist(df_rel,method="bray")
+
+pairwise_adonis_bray <- pairwise.adonis2(otu_table(dis)~ site_id,
+                 data=df_rel, permutations=999,
+                 method = "bray")
+pairwise_adonis_bray
+```
+
+
+Perform RDA
+```{r RDA}
+ps.ord_clr <- ordinate(ps_clr, "RDA", "euclidean")
+```
+
+Choose RDA plot colors
+```{r Select RDA plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c("red", "blue"))
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot RDA
+```{r Plot RDA}
+
+beta = plot_ordination(ps_clr, ps.ord_clr,color="latitude") +
+       scale_color_manual(values=mycolors(12)) +
+       theme_classic() +
+       theme(legend.text =element_text(size=4)) +
+       theme(legend.title = element_text(size=4)) +
+       theme(axis.title.x = element_text(size = 5)) +
+       theme(axis.title.y = element_text(size = 5)) +
+       theme(axis.text.x = element_text(size =4)) +
+       theme(axis.text.y = element_text(size =4)) +
+       labs(color='Site ID') 
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+#ggsave('spiny_lobster_ra_RDA.png', plot=beta,
+   #    path = "/Users/aiko.abo.dominguez/Desktop/Spiny_lobster_project/R_code/figures")
+
+```
+
+
+## Beta diversity all sites
+
+Filter all ps taxa for NAs
+```{r}
+
+ps_NArm <- ps %>%
+  subset_taxa(Kingdom != "Unassigned")
+#%>% subset_taxa(Phylum != "NA")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+CLR transformation for filtered ps for PERMANOVA and RDA
+
+```{r CLR transformation}
+ps_clr <- microbiome::transform(ps_filter, 'clr')
+ps_clr
+```
+
+Compute euclidian distance matrix based on the OTU/ASV table for PERMANOVA.
+
+```{r Create distance matrix}
+dis <- vegdist(otu_table(ps_clr), method ="euclidean")
+#test homogeneity of group dispersions (variances).
+mod <- betadisper(dis, sample_data(ps_clr)$Lat) #changed from site_id to Lat
+mod
+## Permutation test for F
+permutest(mod)
+```
+
+Non-metric multidimensional scaling to compare community structure among samples based on the binary dataset using Sorenson's distance matrix. Prior to PERMANOVA
+
+PERMANOVA 
+```{r Perform adnois}
+#convert meta data to dataframe
+df_clr= as(sample_data(ps_clr), "data.frame")
+colnames(df_clr)
+
+#running adonis2
+adonis2(otu_table(ps_clr) ~ site_id, 
+       data =df_clr, permutations = 999, 
+         method = "euc")
+
+#subset L vs A site IDs to test if it's working
+ps_L_A <- subset_samples(ps_clr, site_id %in% c("A", "L"))
+df_clr_LA <- subset(df_clr, site_id %in% c("A", "L"))
+
+test <- adonis2(otu_table(ps_L_A) ~ site_id, 
+       data =df_clr_LA, permutations = 999, 
+         method = "euc")
+test
+
+#pairwise adonis 
+devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+library(pairwiseAdonis)
+
+pairwise_adonis <- pairwise.adonis2(otu_table(ps_clr) ~ Don,
+                 data=df_clr, permutations=999,
+                 method = "euc")
+
+#pairwise adonis using bray curtis
+ps_rel <- microbiome::transform(ps,"compositional")
+df_rel= as(sample_data(ps_rel), "data.frame")
+
+dist_bray <- vegdist(df_rel,method="bray")
+
+pairwise_adonis_bray <- pairwise.adonis2(otu_table(dis)~ site_id,
+                 data=df_rel, permutations=999,
+                 method = "bray")
+pairwise_adonis_bray
+```
+
+
+Perform RDA
+```{r RDA}
+ps.ord_clr <- ordinate(ps_clr, "RDA", "euclidean")
+```
+
+Choose RDA plot colors
+```{r Select RDA plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c("red", "blue"))
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot RDA
+```{r Plot RDA}
+
+beta = plot_ordination(ps_clr, ps.ord_clr,color="latitude") +
+       scale_color_manual(values=mycolors(12)) +
+       theme_classic() +
+       theme(legend.text =element_text(size=4)) +
+       theme(legend.title = element_text(size=4)) +
+       theme(axis.title.x = element_text(size = 5)) +
+       theme(axis.title.y = element_text(size = 5)) +
+       theme(axis.text.x = element_text(size =4)) +
+       theme(axis.text.y = element_text(size =4)) +
+       labs(color='Site ID') 
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+#ggsave('spiny_lobster_ra_RDA.png', plot=beta,
+   #    path = "/Users/aiko.abo.dominguez/Desktop/Spiny_lobster_project/R_code/figures")
+
+```
+
+
+##ANCOMBC2
+Identify taxa that have different abundances across sample sites. 
+
+ANCOMBC2 fits a linear model to the species relative abundances that have been log-transformed across sample sites (or the variables in the chosen formula)
+
+Description of output values of the model:
+
+  lfc = log fold change = beta value (regression coefficient) for the first group compared to the group w/ name in the column. 
+  se = standard error of lfc
+  W = W-statistic, larger values indicate stronger evidence of differential abundance
+  p = p-value 
+  Q = PDR-corrected p-value (using Benjamini-Hochberg or similar correction)
+  diff = TRUE/FALSE taxa has differential abundance based on Q
+  passed_ss = TRUE/FALSE passed sample size check: whether the taxon has the minimum prevalence/sample size criteria for inclusion
+  diff_robust = more conservative flag for differential abundance, controlling fro statisticall ssignificance and robustness
+
+
+###ANCOMBC2 all sites
+####Filter ps and ANCOMBC
+```{r}
+ps_NArm <- ps %>%
+  subset_taxa(Kingdom != "Unassigned")
+```
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+ps
+#select filter
+ps_filter = filter_taxa(ps , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+ANCOMBC
+```{r Identify taxa that have different abundances across sample sites}
+set.seed(123)
+out <- ancombc2(
+  data = ps_filter,                        # your phyloseq object
+  tax_level = "ASV",               # or Genus/Family/etc. if aggregated
+  fix_formula = "site_id",             # your variable of interest
+  p_adj_method = "holm",            # False Discovery Rate correction. try holm
+  pairwise=TRUE,
+  prv_cut = 0,     # Remove taxa with X% zeros across samples
+  lib_cut = 1000, # Filter samples with library size < 1000
+  struc_zero = TRUE,           # Identify taxa structurally absent in a group
+  group="site_id",
+  n_cl=4,
+  alpha = 0.001,               # alpha value for significance
+  global = TRUE               # Don't perform global test across all levels  
+)
+
+res_pair = out$res_pair
+res_site = out$res
+View(res_pair)
+```
+
+####Arrange results
+Sort significant pairs DIFF AND DIFF_ROBUST
+
+```{r}
+# Identify relevant column groups
+lfc_cols <- grep("^lfc_site_id\\d+_site_id\\d+$", names(res_pair), value = TRUE)
+base_names <- sub("^lfc_", "", lfc_cols)
+se_cols <- paste0("se_", base_names)
+diff_cols <- paste0("diff_", base_names)
+diff_robust_cols <- paste0("diff_robust_", base_names)
+
+# Select all necessary columns
+res_pair_sig <- res_pair %>%
+  select(taxon, all_of(lfc_cols), all_of(se_cols), all_of(diff_cols), all_of(diff_robust_cols)) %>%
+  pivot_longer(
+    cols = -taxon,
+    names_to = c(".value", "comparison"),
+    names_pattern = "^(lfc|se|diff|diff_robust)_(site_id\\d+_site_id\\d+)$"
+  ) %>%
+  filter(diff == TRUE) %>%  # Filter on non-robust diff
+  mutate(
+    site_A = str_match(comparison, "^site_id(\\d+)")[, 2],
+    site_B = str_match(comparison, "_site_id(\\d+)$")[, 2]
+  ) %>%
+  select(taxon, site_A, site_B, lfc, se, diff_robust)  # Keep robust flag
+
+  
+#Add site_type columns by matching site_A and site_B to metadata$site_id
+res_pair_sig$site_type_A <- metadata$site_type[match(res_pair_sig$site_A, metadata$site_id)]
+res_pair_sig$site_type_B <- metadata$site_type[match(res_pair_sig$site_B, metadata$site_id)]
+
+#add significance
+
+res_pair_sig <- res_pair_sig%>%
+  mutate(sig=ifelse(diff_robust==TRUE,"*","")) 
+
+
+```
+
+Sort significant pairs PASSED_SS
+
+```{r}
+# Identify relevant column groups
+lfc_cols <- grep("^lfc_site_id\\d+_site_id\\d+$", names(res_pair), value = TRUE)
+base_names <- sub("^lfc_", "", lfc_cols)
+se_cols <- paste0("se_", base_names)
+passed_ss <- paste0("passed_ss_", base_names)
+
+# Select all necessary columns
+res_pair_sig <- res_pair %>%
+  select(taxon, all_of(lfc_cols), all_of(se_cols), all_of(passed_ss)) %>%
+  pivot_longer(
+    cols = -taxon,
+    names_to = c(".value", "comparison"),
+    names_pattern = "^(lfc|se|passed_ss)_(site_id\\d+_site_id\\d+)$"
+  ) %>%
+  mutate(
+    site_A = str_match(comparison, "^site_id(\\d+)")[, 2],
+    site_B = str_match(comparison, "_site_id(\\d+)$")[, 2]
+  ) %>%
+  select(taxon, site_A, site_B, lfc, se, passed_ss)   
+
+nrow(res_pair_sig)
+
+res_pair_sig=res_pair_sig %>%
+  filter(abs(lfc)>2)
+
+nrow(res_pair_sig)
+  
+#Add site_type columns by matching site_A and site_B to metadata$site_id
+res_pair_sig$site_type_A <- metadata$site_type[match(res_pair_sig$site_A, metadata$site_id)]
+res_pair_sig$site_type_B <- metadata$site_type[match(res_pair_sig$site_B, metadata$site_id)]
+
+```
+
+
+Adding significant ASV info to taxon identity
+```{r Adding significant ASV info to taxon identity}
+
+#  create taxa_df from tax_table(ps_filter)
+taxa_df <- tax_table(ps_filter) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "taxon")
+
+# Join with taxa_df by taxon
+res_pair_sig <- res_pair_sig %>%
+  left_join(taxa_df, by = "taxon")
+
+
+View(res_pair_sig)
+
+```
+
+Reformat data for graphing PASSSED_SS
+
+```{r}
+
+res_sites <- res_pair_sig %>%
+  filter(site_type_A != site_type_B) %>%
+  filter(site_type_A=="Block") %>%
+  mutate(
+    site_Natural = ifelse(site_type_A == "Natural", site_A, site_B),
+    site_Block   = ifelse(site_type_A == "Block", site_A, site_B),
+    lfc_Natural = ifelse(site_type_A == "Natural", lfc, -lfc),
+    se_Natural = se,
+    comparison = paste("Site",site_Natural,"vs site",site_Block),
+    direction = ifelse(lfc_Natural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural")),
+    text_pos= ifelse(lfc_Natural >= 0, lfc_Natural + se_Natural + 1, lfc_Natural - se_Natural - 1)
+  ) 
+  
+
+taxa <- unique(res_sites$taxon)
+
+```
+Reformat data for graphing ROBUST
+
+```{r}
+#Remove same site type comparisons
+
+res_sites <- res_pair_sig %>%
+  filter(site_type_A != site_type_B) %>%
+  mutate(
+    site_Natural = ifelse(site_type_A == "Natural", site_A, site_B),
+    site_Block   = ifelse(site_type_A == "Block", site_A, site_B),
+    lfc_Natural = ifelse(site_type_A == "Natural", lfc, -lfc),
+    se_Natural = se,
+    comparison = paste("Site",site_Natural,"vs site",site_Block),
+    direction = ifelse(lfc_Natural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural")),
+    text_pos= ifelse(lfc_Natural >= 0, lfc_Natural + se_Natural + 1, lfc_Natural - se_Natural - 1)
+  ) 
+  
+
+taxa <- unique(res_sites$taxon)
+taxa
+```
+
+####Plotting
+Plot one taxa
+
+```{r Ancombc graph}
+install.packages("ggsignif")
+library(ggsignif)
+
+#choose colors
+
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+
+#make graph
+test <- res_sites %>% filter(taxon==taxa["c1b91c841c94a5b44ba711dba35df622"])
+
+#make graph
+ancom_fig <- res_sites %>%
+  filter(taxon == taxa[2]) %>%
+  ggplot(aes(x = comparison, y = lfc_Natural)) + 
+  geom_bar(stat = "identity", width = 1,
+           color = "black",
+           aes(fill = direction)) +
+  geom_errorbar(
+    aes(
+      ymin = lfc_Natural - se_Natural,
+      ymax = lfc_Natural + se_Natural
+    ),
+    width = 0.1,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+  coord_flip() +
+  scale_y_continuous(limits = c(-6.8, 6.8), expand = expansion(mult = c(0, 0))) +
+  scale_fill_manual(values = c("#8DA0CB", "#E41A1C")) +
+  theme_bw() + 
+  labs(
+    title="Porifera A",
+    y = "Log fold change (Natural vs Artificial Site)",
+    x = "",
+    fill = "Site type"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(size = 18,hjust=.5),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.y = element_text(size = 12),
+    axis.text.x = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.background = element_blank(),
+    strip.text.y.left = element_text(angle = 0)
+  ) +
+  #geom_text(aes(x = text_x, label = sig), size = 9) +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.5)
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/ANCOMBC_ASVlevel_allsites_poriferaB_PAV1_eDNA.png",
+     width = 7, height = 5, units = "in", dpi=300)
+```
+
+Plot ALL results PASSED_SS
+```{r}
+taxa.labs <- res_sites %>%
+  distinct(taxon, Phylum) %>%
+  deframe()
+
+#make graph
+ancom_fig <- res_sites %>%
+  ggplot(aes(x = comparison, y = lfc_Natural)) + 
+  geom_bar(stat = "identity", width = .75,
+           color = "black",
+           aes(fill = direction)) +
+  geom_errorbar(
+    aes(
+      ymin = lfc_Natural - se_Natural,
+      ymax = lfc_Natural + se_Natural
+    ),
+    width = 0.2,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+  facet_grid(. ~ taxon, scales = "free_y", labeller = as_labeller(taxa.labs,default=label_wrap_gen(10))) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0.01, 0.01))) +
+  scale_fill_manual(values = mycolors(2)) +
+  theme_classic() + 
+  labs(
+    title="Taxon",
+    y = "Log fold change (Natural vs Artificial Site)",
+    x = "Site comparison",
+    fill = "Site type"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(size = 30,hjust=.5,vjust=0.2,margin=margin(t=10)),
+    axis.title.x = element_text(size = 26,
+                                margin=margin(t=10)
+                                ),
+    axis.title.y = element_text(size = 26,margin=margin(r=10)),
+    axis.text.y = element_text(size = 22),
+    axis.text.x = element_text(size = 22),
+    legend.text = element_text(size = 22),
+    legend.title = element_text(size = 26),
+    strip.background = element_blank(),
+    strip.text = element_text(size=20)
+  ) +
+  #geom_text(aes( y=text_pos,label = sig), nudge_x=-0.14,size = 9) +
+  geom_hline(yintercept = 0, color = "black", linewidth = .5)
+
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/pass_ss_ANCOMBC_ASVlevel_allSites_PAV1_eDNA.png",
+     width = 30, height = 40, units = "in", dpi=300)
+```
+
+
+Plot ALL results ROBUST
+```{r}
+taxa.labs <- res_sites %>%
+  distinct(taxon, Phylum) %>%
+  deframe()
+
+#make graph
+ancom_fig <- res_sites %>%
+  ggplot(aes(x = comparison, y = lfc_Natural)) + 
+  geom_bar(stat = "identity", width = .75,
+           color = "black",
+           aes(fill = direction)) +
+  geom_errorbar(
+    aes(
+      ymin = lfc_Natural - se_Natural,
+      ymax = lfc_Natural + se_Natural
+    ),
+    width = 0.2,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+  facet_grid(. ~ taxon, scales = "free_y", labeller = as_labeller(taxa.labs,default=label_wrap_gen(10))) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0.01, 0.01))) +
+  scale_fill_manual(values = mycolors(2)) +
+  theme_classic() + 
+  labs(
+    title="Taxon",
+    y = "Log fold change (Natural vs Artificial Site)",
+    x = "Site comparison",
+    fill = "Site type"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(size = 30,hjust=.5,vjust=0.2,margin=margin(t=10)),
+    axis.title.x = element_text(size = 26,
+                                margin=margin(t=10)
+                                ),
+    axis.title.y = element_text(size = 26,margin=margin(r=10)),
+    axis.text.y = element_text(size = 22),
+    axis.text.x = element_text(size = 22),
+    legend.text = element_text(size = 22),
+    legend.title = element_text(size = 26),
+    strip.background = element_blank(),
+    strip.text = element_text(size=20)
+  ) +
+  #geom_text(aes( y=text_pos,label = sig), nudge_x=-0.14,size = 9) +
+  geom_hline(yintercept = 0, color = "black", linewidth = .5)
+
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/ANCOMBC_ASVlevel_allSites_PAV1_eDNA.png",
+     width = 30, height = 40, units = "in", dpi=300)
+```
+
+
+
+###ANCOMBC2 Natural vs Block
+
+####Filter ps and ANCOMBC
+
+```{r}
+ps_NArm <- ps %>%
+  subset_taxa(Superkingdom != "Unassigned")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+ps
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+ANCOMB
+```{r Identify taxa that have different abundances across sample sites}
+set.seed(123)
+###HOLM correction
+out <- ancombc2(
+  data = ps_filter,                        # your phyloseq object
+  tax_level = "ASV",               # or Genus/Family/etc. if aggregated
+  fix_formula = "site_type",             # your variable of interest
+  p_adj_method = "holm",            # False Discovery Rate correction. try holm
+  pairwise=FALSE,
+  prv_cut = 0,     # Remove taxa with X% zeros across samples
+  lib_cut = 1000, # Filter samples with library size < 1000
+  struc_zero = TRUE,           # Identify taxa structurally absent in a group
+  group="site_type",
+  n_cl=4,
+  alpha = 0.001,               # alpha value for significance
+  global = FALSE               # Don't perform global test across all levels  
+)
+
+#save outputs 
+res = out$res
+View(res)
+
+
+```
+
+####Arrange results
+Adding taxonomy to ANCOMBC results 
+```{r Adding significant ASV info to taxon identity}
+library(purrr)
+library(stringr)
+
+#create a reference taxa table to assign ASV to res table 
+taxa_df <- tax_table(ps_filter) %>% as.data.frame() %>% rownames_to_column(var = "taxon") 
+ancomb_df = res %>% left_join(taxa_df, by = "taxon")
+
+#View(ancomb_df)
+
+```
+
+filter for significance
+
+```{r}
+ancomb_sig = ancomb_df %>%
+  filter(passed_ss_site_typeNatural == "TRUE") %>%
+  filter(abs(lfc_site_typeNatural)> 2) 
+dim(ancomb_sig)
+
+#print ASVs with low taxonomy resolution
+no_phylum <- ancomb_sig[ancomb_sig$Phylum=="Eukaryota Superkingdom",]
+no_phylum
+
+no_kingdom <- ancomb_sig[ancomb_sig$Phylum=="Unassigned Superkingdom",]
+#View(no_kingdom)
+
+#add sequences
+seq_df <- seq_table%>% as.data.frame() %>% rownames_to_column(var = "taxon") %>% rename(seq=x)
+no_kingdom = no_kingdom %>% left_join(seq_df, by = "taxon") 
+seq_no_kingdom = subset(no_kingdom,select=c(taxon,seq))
+View(seq_no_kingdom)
+
+write_csv(seq_no_kingdom,path="/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/seq_no_kingdom.csv")
+
+#remove these ASVs with low taxonomy resolution
+ancomb_sig_clean = ancomb_sig%>% anti_join(manual_blast, by="taxon")
+dim(ancomb_sig_clean)
+View(ancomb_sig_clean)
+```
+
+####Plotting
+Choose colors
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+PLOT RESULTS version 1
+
+```{r Ancombc graph}
+#choose colors
+
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+#choose labels
+combo_labs <- as_labeller(c("Block" = "Block",
+                          "Natural" = "Natural"), default = label_parsed)
+#make graph
+
+ancom_fig <- ancomb_sig_clean %>%
+  #filter(diff_site_typeNatural == "TRUE") %>%
+  #filter for passed_ss and then filter lfcs >= 2
+  filter(passed_ss_site_typeNatural == "TRUE") %>%
+  filter(abs(lfc_site_typeNatural)> 2) %>%
+  
+  #create column to determine color and direction
+  mutate(
+    direction = ifelse(lfc_site_typeNatural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural"))
+  ) %>%
+  
+  #make bar plot
+  ggplot(aes(lfc_site_typeNatural, y = taxon)) + 
+  geom_bar(stat = "identity", width = 1,
+           color="black",
+           aes(fill=direction)) +
+  scale_fill_manual(values = mycolors(2)) +
+  theme_bw() + 
+  geom_errorbar(
+    aes(
+      xmin = lfc_site_typeNatural - se_site_typeNatural,
+      xmax = lfc_site_typeNatural + se_site_typeNatural
+    ),
+    width = 0.1,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+ # facet_grid(.~Phylum, space = "free", scales = "free", switch = "y", labeller = labeller(direction = combo_labs,default=label_wrap_gen(10))) +
+  facet_grid(Phylum ~ ., space = "free", scales = "free", switch = "y", labeller = labeller(direction = as_labeller(combo_labs))) +
+  scale_color_manual(values = mycolors(2)) +
+  scale_x_continuous(limits = c(-7, 7),breaks=seq(-7, 7, by = 1)) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor.x = element_blank(),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.ticks.y = element_blank(), 
+   # axis.text.y = element_text(size = 12),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 12),
+    
+    # strip.text.y = element_blank(),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.background = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    # axis.text.x = element_text(angle = 90, hjust = 1),
+    strip.text.y = element_text(size = 12)
+  ) +
+   labs(
+    y = "Phylum",
+    x = "Block vs Natural Site (Log fold change)",
+    fill = "Site type"
+  ) +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.5)
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/v2passed_ssANCOMBC_ASVlevel_site_type_PAV1_eDNA.png",
+     width = 7, height = 5, units = "in", dpi=300)
+```
+
+
+Plot results version 2
+```{r}
+combo_labs <- as_labeller(c("Block"="Block","Natural"="Natural"))
+
+ancombc_fig <- ancomb_sig_clean %>%
+ #filter(diff_site_typeNatural == "TRUE") %>%
+  filter(passed_ss_site_typeNatural == "TRUE") %>%
+  filter(abs(lfc_site_typeNatural)> 2) %>%
+ 
+  mutate(
+    direction = ifelse(lfc_site_typeNatural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural"))
+  ) %>%
+  ggplot(aes(x = reorder(ASV, lfc_site_typeNatural), y = lfc_site_typeNatural, fill = direction)) +
+  geom_bar(stat = "identity", color = "black",width=1,linewidth=1) +
+  geom_errorbar(aes(ymin = lfc_site_typeNatural - se_site_typeNatural, 
+                    ymax = lfc_site_typeNatural + se_site_typeNatural), width = 0.2,linewidth=1) +
+  labs(
+    x = "ASVs",
+    y = "Log2 Fold Change",
+    fill = "Direction") +
+  scale_fill_manual(values = mycolors(2)) +
+
+  facet_grid(Phylum ~ direction, space = "free", scales = "free", switch = "y", labeller = labeller(direction = as_labeller(combo_labs))) +
+  
+
+  coord_flip() +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text(size = 30),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_blank(),
+    strip.text.x = element_text(size = 30),
+    strip.text.y = element_text(size=30),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 10),
+    legend.position = "none",
+    panel.spacing.x = unit(0.0, "lines"),
+    panel.spacing.y = unit(0.0, "lines")
+  ) 
+#theme(axis.text.x = element_text(angle = 60, hjust = 1)) 
+ancombc_fig
+
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/test3.png",
+     width = 10, height = 20, units = "in", dpi=300)
+
+```
+
+```{r}
+library(stringr)
+combo_labs <- as_labeller(c("Block"="Block","Natural"="Natural"))
+
+
+# Wrap y-axis facet labels (Order)
+order_labeller <- function(labels) {
+  str_wrap(labels, width = 10)
+}
+
+ancombc_fig <- ancomb_df %>%
+  filter(diff_site_typeNatural == "TRUE") %>%
+  mutate(
+    direction = ifelse(lfc_site_typeNatural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural"))
+  ) %>%
+  ggplot(aes(x = reorder(ASV, lfc_site_typeNatural), y = lfc_site_typeNatural, fill = direction)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_errorbar(aes(ymin = lfc_site_typeNatural - se_site_typeNatural, 
+                    ymax = lfc_site_typeNatural + se_site_typeNatural), width = 0.2) +
+  labs(
+    x = "ASVs",
+    y = "Log2 Fold Change",
+    fill = "Direction"
+  ) +
+  scale_fill_manual(values = mycolors(2)) +
+  facet_grid(Order ~ direction, 
+             space = "free", 
+             scales = "free", 
+             switch = "y", 
+             labeller = labeller(
+               direction = as_labeller(combo_labs),
+               Order = as_labeller(order_labeller)
+             )) +
+  coord_flip() +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_blank(),
+    strip.text.x = element_text(size = 10),
+    strip.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 10),
+    legend.position = "none",
+    panel.spacing.x = unit(0.0, "lines"),
+    panel.spacing.y = unit(0.0, "lines")
+  )
+ancombc_fig
+```
+
+
+
+
+
+### ANCOMBC2 Natural sites: north vs south
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+ANCOMB
+```{r Identify taxa that have different abundances across sample sites}
+out <- ancombc2(
+  data = ps,                        # your phyloseq object
+  tax_level = "Order",               # or Genus/Family/etc. if aggregated
+  fix_formula = "site_type",             # your variable of interest
+  p_adj_method = "holm",            # False Discovery Rate correction
+  prv_cut = 0.05,     # Remove taxa with X% zeros across samples
+  lib_cut = 1000, # Filter samples with library size < 1000
+  group = "site_type",               # for post-hoc contrasts (optional)
+  struc_zero = TRUE,           # Identify taxa structurally absent in a group
+  neg_lb = TRUE,               # Use negative lower bound correction for inference
+  alpha = 0.005,               # alpha value for significance
+  global = FALSE#,               # Don't perform global test across all levels  
+  
+#  iter_control = list(tol=1e-7, #iteration convergence tolerance for estimation-maximation algorithm
+  #                    max_iter=100, #maximum # of iterations for estimation-maximation algorithm
+  #                    verbose=FALSE)
+)
+
+res_type = out$res
+View(res_type)
+
+```
+
+
+extract beta and standard error values from ancombc. 
+```{r extract beta and standard error values}
+#extract values
+res_sort <- res_type %>%
+  pivot_longer(
+    cols = -taxon,
+    names_to = c("metric", "site_type"),
+    names_pattern = "^(.*)_(site_type.*|\\(Intercept\\))$",
+    values_to = "value"
+  ) %>%
+  mutate(
+    # Rename (Intercept) to a Block
+    site_type = ifelse(site_type == "(Intercept)", "Block", "Natural")
+    
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  ) 
+#%>%
+#  mutate(taxon = sub("_[^_]*$", "", taxon))
+
+#print number of significant and non-significant taxa
+length(res_sort$diff[res_sort$diff==1])
+length(res_sort$diff[res_sort$diff==0])
+
+length(res_sort$passed_ss[res_sort$passed_ss==1])
+length(res_sort$passed_ss[res_sort$passed_ss==0])
+
+#isolate lfcs and se of only ROBUST differences in abundance
+res_sig <- data.frame(lfc = res_sort$lfc*res_sort$diff_robust, #keeps only significantly abundant OTUs
+                       taxon = res_sort$taxon,
+                       site_type = res_sort$site_type,
+                       SE = res_sort$se,
+                      diff_robust = res_sort$diff_robust,
+                     check.names = FALSE) %>%
+  filter(diff_robust>0)#prevents R from altering the column/row names
+
+#isolate lfcs and se of only NON-ROBUST differences in abundance
+res_sig <- data.frame(lfc = res_sort$lfc*res_sort$diff, #keeps only significantly abundant OTUs
+                       taxon = res_sort$taxon,
+                       site_type = res_sort$site_type,
+                       SD = res_sort$se,
+                      diff = res_sort$diff,
+                     check.names = FALSE) %>%
+  filter(diff>0)#prevents R from altering the column/row names
+```
+
+Adding significant ASV info to taxon identity
+```{r Adding significant ASV info to taxon identity}
+library(purrr)
+library(stringr)
+
+
+
+#create a reference taxa table to assign OTU to res table NVM I DONT THINK THIS WORKS BC THERE ARE MULTIPLE OTUS PER TAXA
+
+taxa_table_sig <- as.data.frame(taxa_table) %>%
+  rownames_to_column(var = "OTU") %>%
+  mutate_all(~ ifelse(is.na(.), "Unknown", .)) %>%
+  mutate_all(~ ifelse(.=="NA", "Unknown", .))%>% 
+  mutate(taxon = pmetadata_chr(select(., 2:9), ~ str_c(..., sep = "_"))) 
+  
+
+
+res_sig <- left_join(
+  res_sig,
+  select(taxa_table_sig, taxon, OTU, Order),
+  by = "taxon"
+)
+
+#save all this for the particular taxonomic rank of interest
+res_sig_taxon <- res_sig
+
+```
+
+Graph
+
+```{r Ancombc graph}
+#choose colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+
+#make graph
+
+ancom_fig = res_sig %>%
+
+  ggplot(aes(lfc, y = Order)) + 
+  geom_point(aes(color=site_type)) +
+     #geom_bar(stat = "identity", width = 1) +
+             #, position = position_(width = 0.3)) +
+  theme_bw() + 
+  theme(legend.position = "top", 
+        panel.grid.minor.x = element_blank()) +
+    
+  geom_errorbar(aes(xmin = lfc - SD, xmax = lfc + SD),
+                  width = 0.2,
+                  position = position_dodge(0.03), color = "black", alpha=0.5) + 
+  #scale_fill_manual(values=c("#40B5AD", "#6F8FAF")) +
+  labs(y = "Order", x = "Natural vs Artificial Site (Log fold change)", color = "Site type") + 
+  #theme(strip.background = element_rect(fill="white")) +
+  scale_color_manual(values=mycolors(2)) +
+  theme(axis.title.x = element_text(size = 14)) +
+  theme(axis.title.y = element_text(size = 14)) +
+  theme(axis.text.y = element_text(size=8)) +
+  theme(axis.text.x = element_text(size =8)) +
+  #theme(strip.text.y = element_blank()) +
+  guides(color = guide_legend(keywidth = 0.2, , keyheight =.40, nrow=1)) +
+  #theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme(legend.text =element_text(size=12)) +
+  theme(legend.title = element_text(size=14)) +
+  #facet_grid(Order~., space ="free", scales="free", switch="y") +
+  theme(strip.background = element_blank()) +
+  theme(strip.text.y.left = element_text(angle =0 )) +
+  #theme(strip.text.y = element_text(size = 5)) +
+  geom_vline(xintercept = 0, 
+             color = "black", linewidth=.5)
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/Spiny_lobster_project/R_code/figures/PAV1_ANCOM.png",
+     width = 4, height = 4, units = "in", dpi=300)
+```
+
+
+# Alpha diversity calculations
+
+
+##Alpha diversity calculations of all sites
+
+Filter ps taxa
+```{r filter taxa}
+#remove any ASVs with count zero
+ps_div <- filter_taxa(ps, function(x) sum(x > 0) > (0.00*length(x)), TRUE)
+ps_div 
+```
+
+rareify ps taxa
+```{r rareify taxa}
+ps_rare <- phyloseq::rarefy_even_depth(ps_div, rngseed = 123, replace = TRUE, sample.size=60000)
+ps_rare
+```
+
+
+Calculate alpha diversities
+```{r Calculate alpha diversities}
+div <- data.frame(
+  "Observed" = phyloseq::estimate_richness(ps_rare, measures = "Observed"),
+  "Shannon" = phyloseq::estimate_richness(ps_rare, measures = "Shannon"),
+  "InvSimpson" = phyloseq::estimate_richness(ps_rare, measures = "InvSimpson"),
+  "Site" = phyloseq::sample_data(ps_rare)$site_id,
+  "site_type"=phyloseq::sample_data(ps_rare)$site_type)
+
+div
+```
+
+Rearrange data frame with alpha diversities
+```{r}
+#create new data frame for alpha diversity
+div_new =as.data.frame(div) %>%
+  gather(key = metric, value = value, c("Observed", "Shannon", "InvSimpson")) %>%
+  mutate(metric = factor(metric, levels = c("Observed", "Shannon", "InvSimpson")))
+div_new
+
+```
+
+
+Choose alpha diversity plot colors
+```{r Select RDA plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c("red", "blue"))
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+Plot alpha diversity 
+```{r Plot alpha diversity}
+alpha = div_new %>%
+  ggplot(aes(x = Site, y = value, fill = site_type)) +
+    geom_boxplot() +
+    scale_fill_manual(values = mycolors(2)) +
+    geom_point(size = 0.5) +
+    theme_bw() +
+    labs(x = "Site", y = "", fill = "Site type") +
+    facet_wrap(. ~ metric, scales = "free_y") +
+    scale_y_continuous(limits = c(0, NA),expand = expansion(mult = c(0, 0.5))) +
+    theme(
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 14),
+      axis.title.x = element_text(size = 14),
+      axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 14),
+      strip.background = element_blank(),
+      strip.text.x = element_text(size = 14),
+      plot.margin = margin(t = 10, r = 10, b = 30, l = 10)  
+    )
+
+alpha
+ggsave('alpha_div_all_sites_PAV1_eDNA.png', plot=alpha,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures")
+```
+
+##Alpha diversity Natural vs Block
+
+###Filtering and calculations
+Filter taxa
+```{r filter taxa}
+#remove any ASVs with count zero
+ps_div <- filter_taxa(ps , function(x) sum(x > 0) > (0.00*length(x)), TRUE)
+ps_div 
+```
+
+rareify taxa
+```{r rareify taxa}
+ps_rare <- phyloseq::rarefy_even_depth(ps_div, rngseed = 123, replace = TRUE, sample.size=60000)
+ps_rare
+```
+
+
+Calculate alpha diversities
+```{r Calculate alpha diversities}
+div_sitetype <- data.frame(
+  "Observed" = phyloseq::estimate_richness(ps_rare, measures = "Observed"),
+  "Shannon" = phyloseq::estimate_richness(ps_rare, measures = "Shannon"),
+  "InvSimpson" = phyloseq::estimate_richness(ps_rare, measures = "InvSimpson"),
+  "site_type" = phyloseq::sample_data(ps_rare)$site_type,
+  "site_id" =phyloseq::sample_data(ps_rare)$site_id,
+  "sample_id"=phyloseq::sample_data(ps_rare)$sample_id_location)
+
+div_sitetype
+```
+
+Rearrange data frame with alpha diversities
+```{r}
+#create new data frame for alpha diversity
+div_new =as.data.frame(div_sitetype) %>%
+  gather(key = metric, value = value, c("Observed", "Shannon", "InvSimpson")) %>%
+  mutate(id=paste(sample_id,site_id,metric,sep="_"),metric = factor(metric, levels = c("Observed", "Shannon", "InvSimpson")))
+head(div_new)
+```
+
+
+identify outliers within each site and diversity metric 
+```{r}
+library(dplyr)
+
+outliers_df <- div_new %>%
+  group_by(metric, site_type) %>%
+  mutate(
+    q1 = quantile(value, 0.25, na.rm = TRUE),
+    q3 = quantile(value, 0.75, na.rm = TRUE),
+    iqr = q3 - q1,
+    lower = q1 - 1.5 * iqr,
+    upper = q3 + 1.5 * iqr
+  ) %>%
+  filter(value < lower | value > upper) %>%
+  select(sample_id, site_id, site_type, metric, value,id)  
+outliers_df
+
+```
+
+remove outliers
+```{r}
+div_RMoutlier <- div_new %>%
+  anti_join(outliers_df, by = "sample_id") 
+dim(div_RMoutlier)
+```
+
+###Test significance
+
+Check normality
+```{r}
+set.seed(123)
+#store number of shapiro tests to run
+ntests <- length(unique(div_new$site_type)) * length(unique(div_new$metric))
+
+#to cycle unique tests
+metrics <- rep(as.character(unique(div_new$metric)), each=length(unique(div_new$site_type)))
+
+#to cycle site types
+site_types <- as.character(unique(div_new$site_type))
+sites <- rep(site_types, times = length(unique(metrics)))
+
+#create df for shapiro tests
+shapiro_all <- data.frame(site_type = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+  
+#run shapiro tests
+for (i in 1:ntests) {
+  #store site type
+  shapiro_all$site_type[i] <- sites[i]
+  
+  #subset by diversity metric type 
+  metric <- subset(div_new,
+                           metric == metrics[i],
+                           select = c(value, site_type, metric))
+  #store metric type
+  shapiro_all$metric[i] <- as.character(metric$metric[i])
+  
+  #subset by site type
+  site <- subset(metric, site_type==sites[i],select= c(value, site_type))
+  
+  #qqplot
+  qqPlot(site$value)
+  
+  #store outputs
+  shapiro <- shapiro_test(site$value)
+  shapiro_all$w_stat[i] <- shapiro$statistic
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+  #show significance
+  if (shapiro$p.value <= 0.01) {
+      shapiro_all$sig[i] <- "**"
+    } else if (shapiro$p.value <= 0.05) {
+      shapiro_all$sig[i] <- "*"
+    } else {
+      shapiro_all$sig[i] <- ""
+    }
+}
+
+shapiro_all
+
+
+```
+
+log transform. This only sort of fixed the skewedness
+
+```{r}
+#test <- subset(shannon,site_type=="Block",select = value)
+#hist(test$value)
+#test$log = log(test$value)
+#hist(test$log)
+```
+
+
+Linear models and wilcox
+```{r}
+#select whether to include outliers or not
+div = div_RMoutlier
+#div = div_new
+
+
+###observed asv count
+observed <- subset(div,metric=="Observed",select = c(site_type,value))
+
+set.seed(123)
+lm_observed <- lm(value~site_type,data=observed)
+summ_lm_observed <- summary(lm_observed)
+
+###shannon
+shannon <- subset(div,metric=="Shannon",select = c(site_type,value))
+
+wilcox_shannon <- wilcox.test(shannon$value~shannon$site_type,conf.int=TRUE)
+wilcox_shannon
+
+lm_shannon <- lm(value~site_type,data=shannon)
+summ_lm_shannon <- summary(lm_shannon)
+
+
+hist <- subset(shannon,site_type=="Block",select = value)
+hist(hist$value)
+
+####inverse simpson
+InvSimpson <- subset(div,metric=="InvSimpson",select = c(site_type,value))
+
+wilcox_InvSim <- wilcox.test(InvSimpson$value~InvSimpson$site_type,conf.int=TRUE)
+wilcox_InvSim
+
+lm_InvSim <- lm(value~site_type,data=InvSimpson)
+summ_lm_InvSim <- summary(lm_InvSim)
+
+hist <- subset(InvSimpson,site_type=="Block",select = value)
+hist(hist$value)
+
+###store restuls
+ntests <- length(unique(div$metric))
+lm_all <- data.frame(group1= rep("Block",ntests),
+                     group2= rep("Natural",ntests),
+                     metric = as.factor(c("Observed","Shannon","InvSimpson")),
+                     p= numeric(ntests),
+                     p.adj.signif = numeric(ntests),
+                     y.position = numeric(ntests)
+                     )
+
+lm_all$p <- c(coef(summ_lm_observed)[2, 4],
+  coef(summ_lm_shannon)[2, 4],
+  coef(summ_lm_InvSim)[2, 4])
+
+#add stars to show significance
+lm_all$p.adj.signif <- ifelse(lm_all$p < 0.001, "***",
+                         ifelse(lm_all$p < 0.01, "**",
+                         ifelse(lm_all$p < 0.05, "*", "ns")))
+
+#create y maximums for displaying the stars
+lm_all$y.max <- c(max(div$value[div$metric=="Observed"]),
+                       max(div$value[div$metric=="Shannon"]),
+                       max(div$value[div$metric=="InvSimpson"]))
+
+lm_all$y.position <- lm_all$y.max + lm_all$y.max*0.1
+lm_all
+```
+
+###Plotting
+Choose alpha diversity plot colors
+```{r Choose alpha diversity plot colors}
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot alpha diversity
+```{r Plot alpha diversity}
+install.packages("scales")
+library(scales)
+
+#select with or without outliers
+#a = div_new
+a= div_RMoutlier
+
+#create plot
+alpha = a %>%
+  ggplot(aes(x = site_type, y = value, fill = site_type)) +
+    geom_boxplot(outlier.size = 0.5, outlier.colour = "#E41A1C",
+                 show.legend=TRUE) +
+    geom_point(
+      #aes(color = site_id), 
+      size = 1, 
+      show.legend = FALSE) +
+    theme_classic() +
+    scale_fill_manual(values = c("#E41A1C", "#8DA0CB")) +
+    scale_color_manual(
+      values = mycolors(12),
+      labels = c(Block = "Cinder Block", Natural = "Natural")
+    ) +
+    labs(x = "Site type", y = "", fill = "Site type") +
+    stat_pvalue_manual(lm_all, label="{p.adj.signif}",y.position="y.position", hide.ns=TRUE,size=10) +
+    facet_wrap(. ~ metric, scales = "free_y") +
+    scale_y_continuous(limits = c(0, NA),expand = expansion(mult = c(0, 0.5))) +
+    theme(
+      legend.text = element_text(size = 18),
+      legend.title = element_text(size = 18),
+      axis.title.x = element_text(size = 24),
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      strip.background = element_blank(),
+      strip.text.x = element_text(size = 24)
+    ) 
+
+
+alpha
+
+ggsave('alpha_div_unfiltered_site_type_no_outlier_PAV1_eDNA.png', plot=alpha,
+       width = 11,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/alpha_diversity")
+```
+
+
+
+##Alpha diversity by Block number
+
+###Filtering and calculations
+Filter taxa
+```{r filter taxa}
+#remove any ASVs with count zero
+ps_div <- filter_taxa(ps , function(x) sum(x > 0) > (0.00*length(x)), TRUE)
+ps_div 
+```
+
+rareify taxa
+```{r rareify taxa}
+ps_rare <- phyloseq::rarefy_even_depth(ps_div, rngseed = 123, replace = TRUE, sample.size=60000)
+ps_rare
+```
+
+
+Calculate alpha diversities
+```{r Calculate alpha diversities}
+div <- data.frame(
+  "Observed" = phyloseq::estimate_richness(ps_rare, measures = "Observed"),
+  "Shannon" = phyloseq::estimate_richness(ps_rare, measures = "Shannon"),
+  "InvSimpson" = phyloseq::estimate_richness(ps_rare, measures = "InvSimpson"),
+  "site_type" = phyloseq::sample_data(ps_rare)$site_type,
+  "sample_id"=phyloseq::sample_data(ps_rare)$sample_id_location,
+  "nBlocks"=phyloseq::sample_data(ps_rare)$nBlocks)
+
+div
+```
+
+Subset only Block sites
+```{r}
+div_Blocks <- div[div$site_type=="Block",]
+head(div_Blocks)
+```
+
+
+Rearrange data frame with alpha diversities
+```{r}
+#create new data frame for alpha diversity
+div_new =as.data.frame(div_Blocks) %>%
+  gather(key = metric, value = value, c("Observed", "Shannon", "InvSimpson")) %>%
+  mutate(id=paste(sample_id,metric,sep="_"),metric = factor(metric, levels = c("Observed", "Shannon", "InvSimpson")))
+head(div_new)
+```
+
+
+identify outliers within each diversity metric 
+```{r}
+library(dplyr)
+
+outliers_df <- div_new %>%
+  group_by(metric, nBlocks) %>%
+  mutate(
+    q1 = quantile(value, 0.25, na.rm = TRUE),
+    q3 = quantile(value, 0.75, na.rm = TRUE),
+    iqr = q3 - q1,
+    lower = q1 - 1.5 * iqr,
+    upper = q3 + 1.5 * iqr
+  ) %>%
+  filter(value < lower | value > upper) %>%
+  select(sample_id, site_type, metric, value,id)  # pick what to print
+outliers_df
+
+```
+
+remove outliers
+```{r}
+div_outlierRM <- div_new %>%
+  anti_join(outliers_df, by = "id")
+head(div_outlierRM)
+```
+
+Remove 25 Blocks
+```{r}
+#ignore 25 Blocks
+div_new$nBlocks <- as.numeric(div_new$nBlocks)
+div_sub <- div_new[!div_new$nBlocks==25,]
+```
+
+revert to character for plotting
+```{r}
+#revert to character for plotting
+div_new$nBlocks <- as.character(div_new$nBlocks)
+div_sub$nBlocks <- as.character(div_sub$nBlocks)
+```
+
+###Plotting
+Choose alpha diversity plot colors
+```{r Choose alpha diversity plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c( "#8DA0CB","#E41A1C"))
+
+ncolors<- length(unique(div_new$nBlocks))
+#categorical colors
+#mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+#                               brewer.pal(3, "Set2")))
+```
+
+
+Plot alpha diversity boxplots
+```{r Plot alpha diversity}
+alpha = div_new %>%
+  ggplot(aes(x = nBlocks, y = value, fill = nBlocks)) +
+    geom_boxplot(outlier.size = 0.5, outlier.colour = "#E41A1C") +
+    geom_point(aes(color = site_type), size = 1, show.legend = FALSE) +
+    theme_bw() +
+    scale_fill_manual(values = mycolors(ncolors)) +
+    scale_color_manual(
+      values = "black") +
+    labs(x = "Number of Blocks", y = "", 
+     #    fill = "Number of Blocks"
+         ) +
+    facet_wrap(. ~ metric, scales = "free_y") +
+    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.5))) +
+    theme(
+      legend.position = "none",
+      #legend.text = element_text(size = 14),
+     # legend.title = element_text(size = 14),
+      axis.title.x = element_text(size=18),
+      axis.text.x = element_text(size=14),
+      axis.text.y = element_text(size = 14),
+      strip.background = element_blank(),
+      strip.text.x = element_text(size = 18)
+    )
+
+alpha
+
+ggsave('alpha_div_Blocks_no_outliers_PAV1_eDNA.png', plot=alpha,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures")
+```
+
+###Check normality
+
+Check normality
+```{r}
+#store number of shapiro tests to run
+ntests <- length(unique(div_new$nBlocks)) * length(unique(div_new$metric))
+
+#to cycle unique tests
+metrics <- rep(as.character(unique(div_new$metric)), each=length(unique(div_new$nBlocks)))
+
+#to cycle nBlocks 
+nBlocks <- as.character(unique(div_new$nBlocks))
+Blocks <- rep(nBlocks, times = length(unique(metrics)))
+
+#create df for shapiro tests
+shapiro_all <- data.frame(nBlocks = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+  
+#run shapiro tests
+for (i in 1:ntests) {
+  #store Block count
+  shapiro_all$nBlocks[i] <- Blocks[i]
+  
+  #subset by diversity metric type 
+  metric <- subset(div_new,
+                           metric == metrics[i],
+                           select = c(value, nBlocks, metric))
+  #store metric type
+  shapiro_all$metric[i] <- as.character(metric$metric[i])
+  
+  #subset by Block count
+  Block <- subset(metric, nBlocks==Blocks[i],select= c(value, nBlocks))
+  
+  #qqplot
+  qqPlot(Block$value)
+  
+  #store outputs
+  shapiro <- shapiro_test(Block$value)
+  shapiro_all$w_stat[i] <- shapiro$statistic
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+  #show significance
+  if (shapiro$p.value <= 0.01) {
+      shapiro_all$sig[i] <- "**"
+    } else if (shapiro$p.value <= 0.05) {
+      shapiro_all$sig[i] <- "*"
+    } else {
+      shapiro_all$sig[i] <- ""
+    }
+}
+
+shapiro_all
+
+
+```
+
+log transform (DONT RUN THIS)
+
+```{r}
+test <- subset(shannon,site_type=="Block",select = value)
+hist(test$value)
+test$log = log(test$value)
+hist(test$log)
+```
+
+###Linear model
+Convert to numeric for lm
+```{r}
+
+div_new$nBlocks <- as.numeric(div_new$nBlocks)
+```
+
+select colors
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+All lm
+```{r}
+alpha <- div_new %>%
+  ggplot(aes(x = nBlocks, y = value, color = metric)) +
+  
+  theme_bw() +
+  labs(color="Diversity metric") +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', aes(group = metric), color = "black") +
+  
+  # Add R² and p-value, grouped by metric
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(group = metric, label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.1,      
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  # Add regression equation, grouped by metric
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(group = metric, label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.15,          # ~15% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  facet_wrap(. ~ metric, scales = "free_y") +
+    scale_y_continuous(limits = c(0, NA),expand = expansion(mult = c(0, 0.5))) +
+  scale_color_manual(values = mycolors(3)) +
+  ylab("") +
+  xlab("Number of Blocks") +
+  
+  theme(
+    legend.title = element_text(size = 20),
+    legend.text = element_text(size = 18),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    axis.title.x = element_text(size = 24),
+    axis.title.y = element_text(size = 20),
+    strip.text.x = element_text(size =24),
+    strip.text.y = element_text(size = 20),
+    strip.background = element_rect(fill = "white", color = "black", linewidth = 0)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+
+alpha
+
+ggsave('alpha_div_blocks_all_yes25_lm_PAV1_eDNA.png', plot=alpha,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/alpha_diversity")
+```
+
+
+
+Linear model Observed 
+```{r}
+###observed asv count 
+observed <- subset(div_sub,metric=="Observed",select = c(nBlocks,value,metric))
+
+lm_observed <- lm(value~nBlocks,data=observed)
+summary(lm_observed)
+
+intercept <- lm_observed$coefficients[[1]]
+slope<-lm_observed$coefficients[[2]]
+
+#plot
+plot_lm_observed <- observed %>%
+    ggplot(aes(x = nBlocks, y = value)) +
+    geom_point(aes(color = "#E41A1C"),
+               size = 2, show.legend = FALSE) +
+    geom_abline(slope=slope,intercept=intercept, color="#E41A1C") +
+    
+    theme_bw() +
+ #   scale_color_manual(values = mycolors(ncolors)) +
+    labs(x = "Number of Blocks", y = "Unique ASV count", fill = "Number of Blocks") +
+    
+    theme(
+      axis.title.x = element_text(size=18),
+      axis.title.y = element_text(size=18),
+      axis.text.x = element_text(size=14),
+      axis.text.y = element_text(size = 14))
+    
+  plot_lm_observed
+  
+  
+```
+
+Shannon diversity
+```{r}
+#subset
+shannon <- subset(div_sub,metric=="Shannon",select = c(nBlocks,value,metric))
+
+#lm
+lm_shannon <- lm(value~nBlocks,data=shannon)
+summary(lm_shannon)
+
+intercept <- lm_shannon$coefficients[[1]]
+slope<-lm_shannon$coefficients[[2]]
+
+#plot
+plot_lm_shannon <- shannon %>%
+    ggplot(aes(x = nBlocks, y = value)) +
+    geom_point(aes(color = "#E41A1C"),
+               size = 2, show.legend = FALSE) +
+    geom_abline(slope=slope,intercept=intercept, color="#E41A1C") +
+    
+    theme_bw() +
+ #   scale_color_manual(values = mycolors(ncolors)) +
+    labs(x = "Number of Blocks", y = "Shannon diversity index", fill = "Number of Blocks") +
+    
+    theme(
+      axis.title.x = element_text(size=18),
+      axis.title.y = element_text(size=18),
+      axis.text.x = element_text(size=14),
+      axis.text.y = element_text(size = 14))
+    
+  plot_lm_shannon
+```
+
+Inverse simpson index
+```{r}
+#subset
+InvSimpson <- subset(div_sub,metric=="InvSimpson",select = c(nBlocks,value,metric))
+
+#lm
+lm_InvSim <- lm(value~nBlocks,data=InvSimpson)
+summary(lm_InvSim)
+
+intercept <- lm_InvSim$coefficients[[1]]
+slope<-lm_InvSim$coefficients[[2]]
+
+#plot
+plot_lm_InvSim <- InvSimpson %>%
+    ggplot(aes(x = nBlocks, y = value)) +
+    geom_point(aes(color = "#E41A1C"),
+               size = 2, show.legend = FALSE) +
+    geom_abline(slope=slope,intercept=intercept, color="#E41A1C") +
+    
+    theme_bw() +
+ #   scale_color_manual(values = mycolors(ncolors)) +
+    labs(x = "Number of Blocks", y = "Inverse Simpson index", fill = "Number of Blocks") +
+    
+    theme(
+      axis.title.x = element_text(size=18),
+      axis.title.y = element_text(size=18),
+      axis.text.x = element_text(size=14),
+      axis.text.y = element_text(size = 14))
+    
+  plot_lm_InvSim
+
+```
+
+##Alpha diversity by Lobster number 
+
+###Filtering and calculations
+Generating phyloseq
+```{r Generating phyloseq}
+#generating object
+ps <- phyloseq(otu_table(t(ASV_table), taxa_are_rows=FALSE),
+              sample_data(metadata), 
+              tax_table(taxa_table), 
+              tree_file)
+ps
+```
+
+Filter taxa
+```{r filter taxa}
+#remove any ASVs with count zero
+ps_div <- filter_taxa(ps , function(x) sum(x > 0) > (0.00*length(x)), TRUE)
+ps_div 
+```
+
+rareify taxa
+```{r rareify taxa}
+ps_rare <- phyloseq::rarefy_even_depth(ps_div, rngseed = 123, replace = TRUE, sample.size=60000)
+ps_rare
+```
+
+
+Calculate alpha diversities
+```{r Calculate alpha diversities}
+div <- data.frame(
+  "Observed" = phyloseq::estimate_richness(ps_rare, measures = "Observed"),
+  "Shannon" = phyloseq::estimate_richness(ps_rare, measures = "Shannon"),
+  "InvSimpson" = phyloseq::estimate_richness(ps_rare, measures = "InvSimpson"),
+  "site_type" = phyloseq::sample_data(ps_rare)$site_type,
+  "sample_id"=phyloseq::sample_data(ps_rare)$sample_id_location,
+  "nLobster"=phyloseq::sample_data(ps_rare)$Total_Lobsters_ren)
+
+div
+```
+Subset only Block sites
+```{r}
+div_Blocks <- div[div$site_type=="Block",]
+head(div_Blocks)
+```
+
+Rearrange data frame with alpha diversities
+```{r}
+#create new data frame for alpha diversity
+div_new =as.data.frame(div) %>%
+  gather(key = metric, value = value, c("Observed", "Shannon", "InvSimpson")) %>%
+  mutate(metric = factor(metric, levels = c("Observed", "Shannon", "InvSimpson")))
+```
+
+
+identify outliers within each diversity metric 
+```{r}
+library(dplyr)
+
+outliers_df <- div_new %>%
+  group_by(metric, nLobster) %>%
+  mutate(
+    q1 = quantile(value, 0.25, na.rm = TRUE),
+    q3 = quantile(value, 0.75, na.rm = TRUE),
+    iqr = q3 - q1,
+    lower = q1 - 1.5 * iqr,
+    upper = q3 + 1.5 * iqr
+  ) %>%
+  filter(value < lower | value > upper) %>%
+  select(sample_id, site_type, metric, value)  # pick what to print
+outliers_df
+
+```
+
+remove outliers
+```{r}
+div_new <- div_new %>%
+  anti_join(outliers_df, by = "sample_id")
+
+```
+
+
+revert to character for plotting
+```{r}
+#revert to character for plotting
+div_new$nLobster <- as.character(div_new$nLobster)
+
+```
+
+###Plotting
+Choose alpha diversity plot colors
+```{r Choose alpha diversity plot colors}
+#continuous colors
+colors
+
+mycolors <- colorRampPalette(c( "#8DA0CB","#E41A1C"))
+
+ncolors<- length(unique(div_new$nLobster))
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot alpha diversity 
+```{r Plot alpha diversity}
+alpha = div_new %>%
+  ggplot(aes(x = nLobster, y = value, fill = nLobster)) +
+    geom_boxplot(outlier.size = 0.5, outlier.colour = "#E41A1C",show.legend=FALSE) +
+    geom_point(aes(color = site_type), size = 1, show.legend = FALSE) +
+    theme_bw() +
+    scale_fill_manual(values = mycolors(ncolors)) +
+    scale_color_manual(
+      values = mycolors(ncolors)) +
+    labs(x = "Number of Lobsters", y = "", 
+     #    fill = "Number of Blocks"
+         ) +
+    facet_wrap(. ~ metric, scales = "free_y") +
+    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.5))) +
+    theme(
+      legend.position = "top",
+      #legend.text = element_text(size = 14),
+     # legend.title = element_text(size = 14),
+      axis.title.x = element_text(size=18),
+      axis.text.x = element_text(size=14),
+      axis.text.y = element_text(size = 14),
+      strip.background = element_blank(),
+      strip.text.x = element_text(size = 18)
+    )
+
+alpha
+
+ggsave('TesT_alpha_div_Blocks_no_outliers_PAV1_eDNA.png', plot=alpha,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/alpha_diversity")
+```
+
+###Check normality
+
+DOESNT WORK Shapiro wilk normality test
+```{r}
+
+#store number of shapiro tests to run
+ntests <- length(unique(div_new$nLobster)) * length(unique(div_new$metric))
+ntests
+
+#to cycle unique tests
+metrics <- rep(as.character(unique(div_new$metric)), each=length(unique(div_new$nLobster)))
+metrics
+
+#to cycle nLobs
+nLobs <- as.character(unique(div_new$nLobster))
+Lobs <- rep(nLobs, times = length(unique(metrics)))
+Lobs
+
+#create df for shapiro tests
+shapiro_all <- data.frame(nLobs = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+  
+#run shapiro tests
+for (i in 1:ntests) {
+  #store Lobster count
+  shapiro_all$nLobs[i] <- Lobs[i]
+  
+  #subset by diversity metric type 
+  metric <- subset(div_new,
+                           metric == metrics[i],
+                           select = c(value, nLobs, metric,value))
+  #store metric type
+  shapiro_all$metric[i] <- as.character(metrics$metric[i])
+  
+  #subset by Lobster count
+  Lob <- subset(metric, nLobs==Lobs[i],select= c(value, nLobs))
+  
+  #qqplot
+  qqPlot(Lob$value)
+  
+  #store outputs
+  shapiro <- shapiro_test(Lob$value)
+  shapiro_all$w_stat[i] <- shapiro$statistic
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+  #show significance
+  if (shapiro$p.value <= 0.01) {
+      shapiro_all$sig[i] <- "**"
+    } else if (shapiro$p.value <= 0.05) {
+      shapiro_all$sig[i] <- "*"
+    } else {
+      shapiro_all$sig[i] <- ""
+    }
+}
+
+shapiro_all
+
+
+```
+
+###Linear model
+Convert to numeric for lm
+```{r}
+div_new$nLobster <- as.numeric(div_new$nLobster)
+```
+
+select colors
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+mycolors<- colors[3:5,1]
+```
+
+
+All lm
+```{r}
+alpha <- div_new %>%
+  ggplot(aes(x = nLobster, y = value, color = metric)) +
+  
+  theme_bw() +
+  labs(color="Diversity metric") +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', aes(group = metric), color = "black") +
+  
+  # Add R² and p-value, grouped by metric
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(group = metric, label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.1,      
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  # Add regression equation, grouped by metric
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(group = metric, label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.15,          # ~15% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  facet_wrap(. ~ metric, scales = "free_y") +
+    scale_y_continuous(limits = c(0, NA),expand = expansion(mult = c(0, 0.5))) +
+  scale_color_manual(values = mycolors(3)) +
+  ylab("") +
+  xlab("Number of Lobsters") +
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 14),
+    strip.text.x = element_text(size =18),
+    strip.text.y = element_text(size = 14),
+    strip.background = element_rect(fill = "white", color = "black", linewidth = 0)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+ggsave('alpha_div_lobster_lm_PAV1_eDNA.png', plot=alpha,
+       width = 14,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/alpha_diversity")
+```
+
+
+
+#Map of sample sites
+
+
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+Map version 1 with site ID labels
+```{r Examining metadata}
+#plotting sample long and lat visually
+
+m <- leaflet(data = metadata) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addCircleMarkers(
+    lng = ~Long, lat = ~Lat,
+    radius = 4,
+    color = "#2074ac", stroke = FALSE, fillOpacity = 0.7
+  ) %>% #add text label
+
+  #add labels for site ID
+ddLabelOnlyMarkers(
+    lng = ~Long, lat = ~Lat,
+    label = ~site_id,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "top",   # label direction
+      offset = c(0, 0),  # offset labels
+      textOnly = TRUE,
+      style = list(
+        "color" = "black",
+        "font-size" = "14px",
+        "font-family"="Arial"
+      )
+    )
+  )
+
+m
+#save map
+
+
+options(chromote.chrome = "/Applications/Google Chrome.app")
+
+metadatashot2(m, file = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/TESTmetadata_sites_PAV1_eDNA.png", cliprect = "viewport", vwidth = 2000,         # virtual viewport width (in pixels)
+        vheight = 1600,        # virtual height
+        zoom = 12,            
+        )
+```
+
+Map version 2. No site ID labels
+```{r Examining metadata}
+install.packages("mapview")
+install.packages("webshot2")
+library(mapview)
+library(webshot2)
+
+
+map <- mapview(metadata, xcol = "Long", ycol = "Lat", 
+             #  zcol = "site_type",
+               crs = 4269, grid = FALSE,cex=6
+             ,  col.regions = mycolors(2)
+               )
+
+map
+
+options(chromote.chrome = "/Applications/Google Chrome.app")
+
+mapshot(map, file = "site_map_PAV1_eDNA.png",path="/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures", vwidth = 1200, vheight = 900)
+
+mapshot(map, file = "site_map_PAV1_eDNA.html",path="/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures")
+
+
+```
+
+
+#Number of blocks and taxa/lobster counts
+## nBlocks vs nLobster
+
+###Filtering and calculations
+
+Subset only Block sites
+```{r}
+block_lob <- metadata[metadata$site_type=="Block",]
+head(block_lob)
+```
+
+identify outliers within each diversity metric 
+```{r}
+library(dplyr)
+
+outliers_df <- block_lob %>%
+  group_by(nBlocks) %>%
+  mutate(
+    q1 = quantile(Total_Lobsters_ren, 0.25, na.rm = TRUE),
+    q3 = quantile(Total_Lobsters_ren, 0.75, na.rm = TRUE),
+    iqr = q3 - q1,
+    lower = q1 - 1.5 * iqr,
+    upper = q3 + 1.5 * iqr
+  ) %>%
+  filter(Total_Lobsters_ren < lower | Total_Lobsters_ren > upper) %>%
+  select(sample_id_location, Total_Lobsters_ren)  # pick what to print
+outliers_df
+
+```
+
+remove outliers
+```{r}
+block_lob <- block_lob %>%
+  anti_join(outliers_df, by = "sample_id")
+
+```
+
+Remove 25 blocks
+```{r}
+block_lob_sub <- subset(block_lob,nBlocks!=25,select=c(nBlocks,Total_Lobsters_ren,sample_id_location))
+```
+
+
+revert to character for plotting
+```{r}
+#revert to character for plotting
+block_lob_sub$Total_Lobsters_ren <- as.character(block_lob_sub$Total_Lobsters_ren)
+
+```
+
+###Plotting
+
+###Linear model
+Convert to numeric for lm
+```{r}
+block_lob$Total_Lobsters_ren <- as.numeric(block_lob$Total_Lobsters_ren)
+```
+
+select colors
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+All lm
+```{r}
+alpha <- block_lob %>%
+  ggplot(aes(x = nBlocks, y = Total_Lobsters_ren)) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', color = "black") +
+  
+  # Add R² and p-value, grouped by metric
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.1,      
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  #add equation for regression line
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.15,          # ~15% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  
+   #visual customizations
+   scale_y_continuous(limits = c(0, NA),expand = expansion(mult = c(0, 0.5))) +
+  scale_color_manual(values = mycolors(3)) +
+  ylab("Number of lobsters") +
+  xlab("Number of blocks") +
+  
+  theme(
+    legend.title = element_text(size = 20),
+    legend.text = element_text(size = 20),
+    axis.text.x = element_text(size = 24),
+    axis.text.y = element_text(size = 24),
+    axis.title.x = element_text(size = 28),
+    axis.title.y = element_text(size = 28)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+ggsave('testlobster_blocks_lm_PAV1_eDNA.png', plot=alpha,
+       width = 7,
+       height = 7,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+
+
