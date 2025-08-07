@@ -1,0 +1,464 @@
+---
+title: "Relative abundance Spiny Lobster eDNA"
+author: "Aiko Abo Dominguez"
+date: "2025-08-07"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+    toc: true
+    toc_depth: 2
+geometry: margin=0.5in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  fig.width = 13,  # width of the plot
+  fig.height = 5  # height of the plot
+)
+
+setwd("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster")
+```
+
+# Downloads
+installing and loading packages
+```{r, echo = TRUE, results = 'hide', message = FALSE, warning = FALSE}
+# Downloads
+
+# Function to install CRAN packages if not already installed
+install_if_missing <- function(pkgs) {
+  installed <- installed.packages()[, "Package"]
+  to_install <- setdiff(pkgs, installed)
+  if (length(to_install) > 0) {
+    install.packages(to_install)
+  }
+}
+
+# CRAN packages
+#install_if_missing(c("ggplot2", "ape", "vegan", "tidyverse", "sf", "mapview", "leaflet", "webshot2", "car", "rstatix", "RColorBrewer", "ggpmisc", "phyloseq", "limma", "microbiome"))
+
+# devtools (for GitHub installs)
+#install_if_missing("devtools")
+library(devtools)
+
+# GitHub packages
+#if (!"pairwiseAdonis" %in% installed.packages()[, "Package"]) {
+#  install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+#}
+
+#if (!"qiime2R" %in% installed.packages()[, "Package"]) {
+#  install_github("jbisanz/qiime2R")
+#}
+
+#devtools::install_github("kassambara/ggpubr")
+
+# Bioconductor setup
+# if (!"BiocManager" %in% installed.packages()[, "Package"]) {
+#   install.packages("BiocManager")
+# }
+
+# Install Bioconductor packages only if not present
+# bioc_pkgs <- c("phyloseq", "limma", "microbiome", "ANCOMBC")
+# for (pkg in bioc_pkgs) {
+#   if (!requireNamespace(pkg, quietly = TRUE)) {
+#     BiocManager::install(pkg)
+#   }
+# }
+
+# Install microViz package from R Universe
+# install.packages(
+#   "microViz",
+#   repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+# )
+
+# Loading required libraries
+library(qiime2R)
+library(sf)
+library(mapview)
+library(tidyverse)
+library(phyloseq)
+library(ggplot2)
+library(ape)
+library(vegan)
+library(leaflet)
+library(webshot2)
+library(ggpmisc)
+library(ggpubr)
+library(RColorBrewer)
+library(car)
+library(rstatix)
+library(limma)
+library(microbiome)
+library(pairwiseAdonis)
+library(microViz)
+
+```
+
+# Importing data and metadata editing
+
+##**Editing metadata file**
+
+```{r Importing and editing metadata file}
+#import file
+metadata <- read.csv("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/sample_metadata_PAV1_lobster_eDNA.csv")
+
+#change the name of the first column
+metadata$sample_id_old <- metadata$sample.id
+colnames(metadata)[1] <- "sample_id"
+
+#change "don" column to "site ID". "don" is what the FWC labels these sites as.
+colnames(metadata)[4] <- "site_id"
+
+#make function to truncate ID name
+truncate_before_second_underscore <- function(x) {
+  sapply(strsplit(x, "_"), function(parts) paste(parts[1:2], collapse = "_"))
+}
+
+metadata$sample_id <- truncate_before_second_underscore(metadata$sample_id)
+#View(metadata)
+
+#set column 1 as row names
+rownames(metadata) <- metadata$sample_id
+
+#make sure it is a dataframe
+metadata <- as.data.frame(metadata)
+#View(metadata)
+
+#setting variables to be numeric, as appropriate
+metadata$Lat <- as.numeric(metadata$Lat)
+metadata$Long <- as.numeric(metadata$Long)
+metadata$Total_Lobsters <- as.numeric(metadata$Total_Lobsters)
+metadata$EstimatedBiomass <- as.numeric(metadata$EstimatedBiomass)
+
+str(metadata)
+
+# Add a  column sample_id_location by pasting site_id and Replicate_new
+metadata$Replicate_new <- sub(".*_", "", metadata$Replicate)
+metadata$sample_id_location <- paste(metadata$site_id, metadata$Replicate_new, sep = "_")
+
+#add column for sample site ID based on latitude
+sites <- unique(metadata$Long)
+
+#sites
+metadata <- metadata %>%
+  mutate(site_letter = ifelse(Long==sites[1], "A",
+                   ifelse(Long==sites[2], "B",
+                   ifelse(Long==sites[3], "C",
+                   ifelse(Long==sites[4], "D",
+                   ifelse(Long==sites[5], "E",
+                   ifelse(Long==sites[6], "F", 
+                   ifelse(Long==sites[7],"G",
+                   ifelse(Long==sites[8], "H",
+                   ifelse(Long==sites[9], "I",
+                   ifelse(Long==sites[10], "J", 
+                   ifelse(Long==sites[11], "K",
+                   ifelse(Long==sites[12], "L", NA)))))))))))))
+unique(metadata$site_id)
+#View(metadata)
+
+#avg lobster mass
+metadata$avg_lobster_mass <- metadata$EstimatedBiomass/metadata$Total_Lobsters
+mean(metadata$avg_lobster_mass)
+sd(metadata$avg_lobster_mass)
+```
+
+
+
+Exporting coordinates
+```{r exporting coordinates}
+
+coordinates <- data.frame(
+  site_id = unique(metadata$site_id),
+  lat = unique(metadata$Lat),
+  long = unique(metadata$Long)
+)
+
+#write.csv(coordinates,file="PAV1_eDNA_sample_site_coordinates.csv")
+```
+
+
+
+##**Importing ASV sequences, taxa table, and phylogenetic tree**
+```{r Importing ASV sequences, taxa table, and phylogenetic tree}
+#sequence table from dada2 of forward reads, only eukaryotes
+seq_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/seq_ASVs_lobC16S_euks_fwd.qza")
+seq_table <- as.data.frame(seq_qza$data)
+
+
+#ASV table from dada2 of forward reads, only eukaryotes
+ASV_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/table_ASVs_lobC16S_euks_fwd.qza")
+ASV_table <- as.matrix(ASV_qza$data)
+#View(ASV_table)
+
+#truncating ASV column names to match "metadata" truncated sample names
+colnames(ASV_table) <- truncate_before_second_underscore(colnames(ASV_table))
+colnames(ASV_table) 
+metadata[,"sample_id"]
+
+#check that it worked
+rownames(metadata) <- metadata$sample_id
+all(rownames(metadata)%in%colnames(ASV_table))
+
+#import taxa from dada2 of forward reads
+taxa_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/taxonomy_fwd.qza")
+taxa_table <- taxa_qza$data %>% select(-Consensus)
+taxa_table <- taxa_table %>%
+  as_tibble() %>%
+  separate(Taxon, sep=";", c("Superkingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) %>%
+  arrange(Feature.ID) %>%
+  mutate(ASV = paste('ASV',1:n(), sep="_")) %>%
+  column_to_rownames("Feature.ID") %>%
+  as.matrix()
+
+#View(taxa_table)
+
+#Importing phylogenetic tree
+tree_file_qza <-read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/rooted_masked_aligned_seq_ASVs_lobC16S_euks_fwd.qza")
+tree_file<- tree_file_qza$data
+#View(tree_file)
+
+```
+
+
+
+# Phyloseq generation
+Generating phyloseq
+```{r Generating phyloseq}
+#generating object
+ps <- phyloseq(otu_table(t(ASV_table), taxa_are_rows=FALSE),
+              sample_data(metadata), 
+              tax_table(taxa_table), 
+              tree_file)
+ps
+```
+Identifying for NAs in ps filtered by taxonomic rank and turned into a df
+```{r Identify NAs}
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) 
+ps_filter
+
+ps_na = transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  psmelt()
+
+order_NA <- subset(ps_na, Order=="NA")
+family_NA <- subset(ps_na, Family=="NA")
+genus_NA <- subset(ps_na, Genus=="NA")
+dim(order_NA)
+dim(family_NA)
+dim(genus_NA)
+
+#View(family_NA)
+
+#ASVs that are NA/missing in order, but genus is labelled
+na_ASVs <- setdiff(order_NA$OTU,genus_NA$OTU)
+na_ASVs
+
+#this ASV does not have Order, but does have Genus listed
+sum(order_NA$OTU=="a9d4ae9f0286fe9bdb3881218ea6b4c1")
+```
+
+Edit "NAs" from taxa table
+```{r}
+#adding back Order to taxa missing it, had to look up by hand
+taxa_table["a9d4ae9f0286fe9bdb3881218ea6b4c1", "Order"] <- "Neotaenioglossa"
+taxa_table["8ab5f93e9ac490a760599fb46ab9f46a", "Order"] <- "Hubrechtiiformes"
+
+```
+# Relative abundance
+
+##**Filter ps**
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05 length.
+ps
+#SELECT FILTER
+ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+##**Calculate relative abundance before plotting**
+
+Relative abundance computed using custom function, sample-wise (compositional data) for filtered ps (phyloseq object)
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level
+ps_ra = transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+tax_glom("Phylum") %>% #select taxonomic rank
+  psmelt() 
+ 
+#View(ps_ra)
+dim(ps_ra)
+```
+
+##**Plotting**
+
+###**Relative abundance of all samples, by site id**
+
+Set colors for graph
+```{r}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))(nb.cols)
+
+```
+
+
+Making relative abundance graph of orders present
+```{r}
+RA_sup = plot_ps %>%
+  subset(Abundance >0.001) %>% #filter for abundance
+  
+  #create plot
+  ggplot(  
+         aes(x = sample_id_location, y=Abundance, 
+             fill=Phylum)) + #fill is  taxonomic rank
+  
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values = mycolors) +
+  guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+  theme_classic() + #theme
+  facet_grid(.~site_id, scales="free") + 
+  
+  #text sizes
+  theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+  ylab("Relative Abundance") +
+  xlab("Sample")
+
+RA_sup
+# ggsave('Phylum_ra_by_siteID_lobster_eDNA.png', plot=RA_sup,
+#        width = 14,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+
+
+###**Relative abundance of all samples, by Latitude**
+
+```{r}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))(nb.cols)
+
+```
+
+Making relative abundance graph of taxa present
+```{r}
+
+RA_sup = plot_ps %>%
+  subset(Abundance >0.001) %>% #filter for abundance
+  
+  #create plot
+  ggplot(  
+         aes(x = sample_id_location, y=Abundance, 
+             fill=Phylum)) + #fill is  taxonomic rank
+  
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values = mycolors) +
+  guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+  theme_classic() + #theme
+  facet_grid(.~Lat, scales="free") + #separate by lattidue ("Lat")
+  
+  #text sizes
+  theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+  
+  
+  
+  ylab("Relative Abundance") +
+  xlab("Sample")
+
+RA_sup
+# ggsave('Phylum_ra_by_Lattitude_lobster_eDNA.png', plot=RA_sup,
+#        width = 14,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+
+###**Relative abundance of all samples, by site type**
+
+Set colors for graph
+```{r}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))
+
+```
+
+Making relative abundance graph of taxa present
+```{r}
+
+
+    RA_sup = plot_ps %>%
+      
+      subset(Abundance >0.001) %>% #filter for abundance
+      ggplot(  
+             aes(x = sample_id_location, y=Abundance, 
+                 fill=Phylum)) + #fill is  taxonomic rank
+      
+      geom_bar(stat="identity", position="fill") +
+      scale_fill_manual(values = mycolors(nb.cols)) +
+      guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+      theme_classic() + #theme
+      facet_grid(. ~ site_type, scales="free_x",space="free_x") + 
+      
+      #text sizes
+      theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+      
+      ylab("Relative Abundance") +
+      xlab("Sample")
+
+RA_sup
+# ggsave('Family_ra_by_site_PAV1_eDNA.png', plot=RA_sup,
+#        width = 14,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
