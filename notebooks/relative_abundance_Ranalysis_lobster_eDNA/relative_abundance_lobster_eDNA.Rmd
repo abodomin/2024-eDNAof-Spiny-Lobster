@@ -1,0 +1,1048 @@
+---
+title: "Relative abundance Spiny Lobster eDNA"
+author: "Aiko Abo Dominguez"
+date: "2025-08-07"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+    toc: true
+    toc_depth: 2
+geometry: margin=0.5in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  fig.width = 13,  # width of the plot
+  fig.height = 5  # height of the plot
+)
+
+setwd("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster")
+```
+
+# Downloads
+installing and loading packages
+```{r, echo = TRUE, results = 'hide', message = FALSE, warning = FALSE}
+# Downloads
+
+# Function to install CRAN packages if not already installed
+install_if_missing <- function(pkgs) {
+  installed <- installed.packages()[, "Package"]
+  to_install <- setdiff(pkgs, installed)
+  if (length(to_install) > 0) {
+    install.packages(to_install)
+  }
+}
+
+# CRAN packages
+#install_if_missing(c("ggplot2", "ape", "vegan", "tidyverse", "sf", "mapview", "leaflet", "webshot2", "car", "rstatix", "RColorBrewer", "ggpmisc", "phyloseq", "limma", "microbiome"))
+
+# devtools (for GitHub installs)
+#install_if_missing("devtools")
+library(devtools)
+
+# GitHub packages
+#if (!"pairwiseAdonis" %in% installed.packages()[, "Package"]) {
+#  install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+#}
+
+#if (!"qiime2R" %in% installed.packages()[, "Package"]) {
+#  install_github("jbisanz/qiime2R")
+#}
+
+#devtools::install_github("kassambara/ggpubr")
+
+# Bioconductor setup
+# if (!"BiocManager" %in% installed.packages()[, "Package"]) {
+#   install.packages("BiocManager")
+# }
+
+# Install Bioconductor packages only if not present
+# bioc_pkgs <- c("phyloseq", "limma", "microbiome", "ANCOMBC")
+# for (pkg in bioc_pkgs) {
+#   if (!requireNamespace(pkg, quietly = TRUE)) {
+#     BiocManager::install(pkg)
+#   }
+# }
+
+# Install microViz package from R Universe
+# install.packages(
+#   "microViz",
+#   repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+# )
+
+# Loading required libraries
+library(qiime2R)
+library(sf)
+library(mapview)
+library(tidyverse)
+library(phyloseq)
+library(ggplot2)
+library(ape)
+library(vegan)
+library(leaflet)
+library(webshot2)
+library(ggpmisc)
+library(ggpubr)
+library(RColorBrewer)
+library(car)
+library(rstatix)
+library(limma)
+library(microbiome)
+library(pairwiseAdonis)
+library(microViz)
+
+```
+
+# Importing data and metadata editing
+
+##**Editing metadata file**
+
+```{r Importing and editing metadata file}
+#import file
+metadata <- read.csv("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/sample_metadata_PAV1_lobster_eDNA.csv")
+
+#change the name of the first column
+metadata$sample_id_old <- metadata$sample.id
+colnames(metadata)[1] <- "sample_id"
+
+#change "don" column to "site ID". "don" is what the FWC labels these sites as.
+colnames(metadata)[4] <- "site_id"
+
+#make function to truncate ID name
+truncate_before_second_underscore <- function(x) {
+  sapply(strsplit(x, "_"), function(parts) paste(parts[1:2], collapse = "_"))
+}
+
+metadata$sample_id <- truncate_before_second_underscore(metadata$sample_id)
+#View(metadata)
+
+#set column 1 as row names
+rownames(metadata) <- metadata$sample_id
+
+#make sure it is a dataframe
+metadata <- as.data.frame(metadata)
+#View(metadata)
+
+#setting variables to be numeric, as appropriate
+metadata$Lat <- as.numeric(metadata$Lat)
+metadata$Long <- as.numeric(metadata$Long)
+metadata$Total_Lobsters <- as.numeric(metadata$Total_Lobsters)
+metadata$EstimatedBiomass <- as.numeric(metadata$EstimatedBiomass)
+
+str(metadata)
+
+# Add a  column sample_id_location by pasting site_id and Replicate_new
+metadata$Replicate_new <- sub(".*_", "", metadata$Replicate)
+metadata$sample_id_location <- paste(metadata$site_id, metadata$Replicate_new, sep = "_")
+
+#add column for sample site ID based on latitude
+sites <- unique(metadata$Long)
+
+#sites
+metadata <- metadata %>%
+  mutate(site_letter = ifelse(Long==sites[1], "A",
+                   ifelse(Long==sites[2], "B",
+                   ifelse(Long==sites[3], "C",
+                   ifelse(Long==sites[4], "D",
+                   ifelse(Long==sites[5], "E",
+                   ifelse(Long==sites[6], "F", 
+                   ifelse(Long==sites[7],"G",
+                   ifelse(Long==sites[8], "H",
+                   ifelse(Long==sites[9], "I",
+                   ifelse(Long==sites[10], "J", 
+                   ifelse(Long==sites[11], "K",
+                   ifelse(Long==sites[12], "L", NA)))))))))))))
+unique(metadata$site_id)
+#View(metadata)
+
+#avg lobster mass
+metadata$avg_lobster_mass <- metadata$EstimatedBiomass/metadata$Total_Lobsters
+mean(metadata$avg_lobster_mass)
+sd(metadata$avg_lobster_mass)
+```
+
+
+
+Exporting coordinates
+```{r exporting coordinates}
+
+coordinates <- data.frame(
+  site_id = unique(metadata$site_id),
+  lat = unique(metadata$Lat),
+  long = unique(metadata$Long)
+)
+
+#write.csv(coordinates,file="PAV1_eDNA_sample_site_coordinates.csv")
+```
+
+
+
+##**Importing ASV sequences, taxa table, and phylogenetic tree**
+```{r Importing ASV sequences, taxa table, and phylogenetic tree}
+#sequence table from dada2 of forward reads, only eukaryotes
+seq_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/seq_ASVs_lobC16S_euks_fwd.qza")
+seq_table <- as.data.frame(seq_qza$data)
+
+
+#ASV table from dada2 of forward reads, only eukaryotes
+ASV_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/table_ASVs_lobC16S_euks_fwd.qza")
+ASV_table <- as.matrix(ASV_qza$data)
+#View(ASV_table)
+
+#truncating ASV column names to match "metadata" truncated sample names
+colnames(ASV_table) <- truncate_before_second_underscore(colnames(ASV_table))
+colnames(ASV_table) 
+metadata[,"sample_id"]
+
+#check that it worked
+rownames(metadata) <- metadata$sample_id
+all(rownames(metadata)%in%colnames(ASV_table))
+
+#import taxa from dada2 of forward reads
+taxa_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/taxonomy_fwd.qza")
+taxa_table <- taxa_qza$data %>% select(-Consensus)
+taxa_table <- taxa_table %>%
+  as_tibble() %>%
+  separate(Taxon, sep=";", c("Superkingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) %>%
+  arrange(Feature.ID) %>%
+  mutate(ASV = paste('ASV',1:n(), sep="_")) %>%
+  column_to_rownames("Feature.ID") %>%
+  as.matrix()
+
+#View(taxa_table)
+
+#Importing phylogenetic tree
+tree_file_qza <-read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/rooted_masked_aligned_seq_ASVs_lobC16S_euks_fwd.qza")
+tree_file<- tree_file_qza$data
+#View(tree_file)
+
+```
+
+
+
+# Phyloseq generation
+Generating phyloseq
+```{r Generating phyloseq}
+#generating object
+ps <- phyloseq(otu_table(t(ASV_table), taxa_are_rows=FALSE),
+              sample_data(metadata), 
+              tax_table(taxa_table), 
+              tree_file)
+ps
+```
+Identifying for NAs in ps filtered by taxonomic rank and turned into a df
+```{r Identify NAs}
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) 
+ps_filter
+
+ps_na = transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  psmelt()
+
+order_NA <- subset(ps_na, Order=="NA")
+family_NA <- subset(ps_na, Family=="NA")
+genus_NA <- subset(ps_na, Genus=="NA")
+dim(order_NA)
+dim(family_NA)
+dim(genus_NA)
+
+#View(family_NA)
+
+#ASVs that are NA/missing in order, but genus is labelled
+na_ASVs <- setdiff(order_NA$OTU,genus_NA$OTU)
+na_ASVs
+
+#this ASV does not have Order, but does have Genus listed
+sum(order_NA$OTU=="a9d4ae9f0286fe9bdb3881218ea6b4c1")
+```
+
+Edit "NAs" from taxa table
+```{r}
+#adding back Order to taxa missing it, had to look up by hand
+taxa_table["a9d4ae9f0286fe9bdb3881218ea6b4c1", "Order"] <- "Neotaenioglossa"
+taxa_table["8ab5f93e9ac490a760599fb46ab9f46a", "Order"] <- "Hubrechtiiformes"
+
+```
+# Relative abundance
+
+##**Filter ps**
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05 length.
+ps
+#SELECT FILTER
+ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+##**Calculate relative abundance before plotting**
+
+Relative abundance computed using custom function, sample-wise (compositional data) for filtered ps (phyloseq object)
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level
+ps_ra = transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+tax_glom("Phylum") %>% #select taxonomic rank
+  psmelt() 
+ 
+#View(ps_ra)
+dim(ps_ra)
+```
+
+##**Plotting**
+
+###**Relative abundance of all samples, by site id**
+
+Set colors for graph
+```{r}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))(nb.cols)
+
+```
+
+
+Making relative abundance graph of orders present
+```{r}
+RA_sup = plot_ps %>%
+  subset(Abundance >0.001) %>% #filter for abundance
+  
+  #create plot
+  ggplot(  
+         aes(x = sample_id_location, y=Abundance, 
+             fill=Phylum)) + #fill is  taxonomic rank
+  
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values = mycolors) +
+  guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+  theme_classic() + #theme
+  facet_grid(.~site_id, scales="free") + 
+  
+  #text sizes
+  theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+  ylab("Relative Abundance") +
+  xlab("Sample")
+
+RA_sup
+# ggsave('Phylum_ra_by_siteID_lobster_eDNA.png', plot=RA_sup,
+#        width = 14,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+
+
+###**Relative abundance of all samples, by Latitude**
+
+```{r}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))(nb.cols)
+
+```
+
+Making relative abundance graph of taxa present
+```{r}
+
+RA_sup = plot_ps %>%
+  subset(Abundance >0.001) %>% #filter for abundance
+  
+  #create plot
+  ggplot(  
+         aes(x = sample_id_location, y=Abundance, 
+             fill=Phylum)) + #fill is  taxonomic rank
+  
+  geom_bar(stat="identity", position="fill") +
+  scale_fill_manual(values = mycolors) +
+  guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+  theme_classic() + #theme
+  facet_grid(.~Lat, scales="free") + #separate by lattidue ("Lat")
+  
+  #text sizes
+  theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+  
+  
+  
+  ylab("Relative Abundance") +
+  xlab("Sample")
+
+RA_sup
+# ggsave('Phylum_ra_by_Lattitude_lobster_eDNA.png', plot=RA_sup,
+#        width = 14,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+
+###**Relative abundance of all samples, by site type**
+
+Set colors for graph
+```{r}
+#choose which ps to visualize
+plot_ps <- ps_ra
+
+
+#calculate number of colors needed in your color palette, based on count for that taxonomic rank, eg # of unique Classes
+nb.cols <- length(unique(plot_ps$Phylum)) #set taxonomic rank
+nb.cols
+
+#set color palette
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(8, "Set2"),
+                               brewer.pal(12, "Set3")))
+
+```
+
+Making relative abundance graph of taxa present
+```{r}
+
+
+    RA_sup = plot_ps %>%
+      
+      subset(Abundance >0.001) %>% #filter for abundance
+      ggplot(  
+             aes(x = sample_id_location, y=Abundance, 
+                 fill=Phylum)) + #fill is  taxonomic rank
+      
+      geom_bar(stat="identity", position="fill") +
+      scale_fill_manual(values = mycolors(nb.cols)) +
+      guides(fill = guide_legend(keywidth = 0.5, , keyheight =.60, ncol=1)) +
+      theme_classic() + #theme
+      facet_grid(. ~ site_type, scales="free_x",space="free_x") + 
+      
+      #text sizes
+      theme(legend.text =element_text(size=10)) +  #size of legend items
+      theme(legend.title =element_text(size=12)) + #size of legend title
+      theme(axis.title.x = element_text(size = 12)) + #size of x axis title
+      theme(axis.title.y = element_text(size = 12)) +
+      theme(axis.text.y = element_text(size =8)) +
+      theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1)) +
+      theme(strip.text = element_text(size = 12)) +
+      
+      ylab("Relative Abundance") +
+      xlab("Sample")
+
+RA_sup
+# ggsave('Family_ra_by_site_PAV1_eDNA.png', plot=RA_sup,
+#        width = 14,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/lobster_eDNA_project/R_code/figures/relative_abundance")
+```
+#nLobster and nPorifera
+
+
+##**Filtering and calculations**
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 
+#SELECT FILTER. I chose 0.05 length.
+ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level
+ps_ra_porifera <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Phylum") %>% #must match the other RA plot 
+  psmelt() %>%
+  subset(Phylum == "Porifera", 
+         select = c(OTU, sample_id_location, Total_Lobsters_ren, Abundance,Superkingdom,Phylum))
+
+
+View(ps_ra_porifera)
+dim(ps_ra_porifera)
+```
+
+##**Check normality**
+log transform
+```{r}
+ps_ra_porifera$logAbundance <- log(ps_ra_porifera$Abundance)
+```
+
+
+Shapiro
+```{r}
+#create vector with unique Lobster counts
+lobsters <- unique(ps_ra_porifera$Total_Lobsters_ren)
+lobsters
+
+#calculate the # of Shapiro tests to be run
+ntests <-length(lobsters)
+
+#create empty df to store shapiro results
+shapiro_all <- data.frame(nLob = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+
+#determine normality using Shapiro Wilk test for relative abundance values of Porifera 
+for (i in 1:ntests) {
+  #draw qq plot
+  qqPlot(ps_ra_porifera$Abundance[ps_ra_porifera$nLob==lobsters[i]])
+  #run shapiro test
+  shapiro<-shapiro_test(ps_ra_porifera$Abundance[ps_ra_porifera$nLob==lobsters[i]])
+  shapiro
+  #store lobster count for that particular test
+  shapiro_all$nLob[i] <- as.character(lobsters[i])
+  #store w statistic for that particular test
+  shapiro_all$w_stat[i] <- unname(shapiro$statistic)
+   #store p val for that particular test
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+  #add stars to make interpreting results easier
+  if (shapiro$p.value <= 0.01) {
+    shapiro_all$sig[i] <- "**"
+  } else if (shapiro$p.value <= 0.05) {
+    shapiro_all$sig[i] <- "*"
+  } else {
+    shapiro_all$sig[i] <- ""
+  }
+}
+
+shapiro_all
+```
+
+##**Linear model and plotting **
+Convert to numeric for lm
+```{r}
+ps_ra_porifera$Total_Lobsters_ren <- as.numeric(ps_ra_porifera$Total_Lobsters_ren)
+```
+
+Create color palette
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot linear model
+```{r}
+alpha <- ps_ra_porifera %>%
+  ggplot(aes(x = Abundance, y =  Total_Lobsters_ren
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) + #size of points
+  geom_smooth(method = 'lm', color = "black") + #line and test type
+  
+  # Add R^2 and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.25,      # 25% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  #add equation of regression line
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.3,          # 30% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  #visual customizations
+  #scale_y_continuous(limits = c(0, 1)) +
+  #scale_color_manual(color="black") +
+  ylab("Number of lobsters") +
+  xlab("Porifera relative abundance") +
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  ) +
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+# ggsave('porifera_lobster_lm_PAV1_eDNA.png', plot=alpha,
+#        width = 7,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+#nBlocks and nPorifera 
+
+##**Filtering and calculations**
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05 when making my plots
+ps
+#SELECT FILTER
+#ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level. Goes to Order level. 
+ps_ra_porifera <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Order") %>% 
+  psmelt() %>%
+  subset(Phylum == "Porifera" & site_type == "Block", 
+         select = c(OTU, sample_id_location, nBlocks, Abundance,Superkingdom,Phylum,Class,Order))
+
+
+#View(ps_ra_porifera)
+dim(ps_ra_porifera)
+```
+
+##**Check normality**
+log transform
+```{r}
+ps_ra_porifera$logAbundance <- log(ps_ra_porifera$Abundance)
+```
+
+
+Shapiro
+```{r}
+#create vector with unique Block counts
+blocks <- unique(ps_ra_porifera$nBlocks)
+blocks
+
+#calculate the # of Shapiro tests to be run
+ntests <-length(blocks)
+
+#create empty df to store shapiro results
+shapiro_all <- data.frame(nBlocks = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+
+#determine normality using Shapiro Wilk test for relative abundance values of Porifera 
+for (i in 1:ntests) {
+  #draw qq plot
+  qqPlot(ps_ra_porifera$Abundance[ps_ra_porifera$nBlocks==blocks[i]])
+  #run shapiro test
+  shapiro<-shapiro_test(ps_ra_porifera$Abundance[ps_ra_porifera$nBlocks==blocks[i]])
+  shapiro
+  #store Block count for that particular test
+  shapiro_all$nBlocks[i] <- as.character(blocks[i])
+  #store W statistic for that particular test
+  shapiro_all$w_stat[i] <- unname(shapiro$statistic)
+  #store p value for that particular test
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+  #add stars to make interpreting results easier
+  if (shapiro$p.value <= 0.01) {
+    shapiro_all$sig[i] <- "**"
+  } else if (shapiro$p.value <= 0.05) {
+    shapiro_all$sig[i] <- "*"
+  } else {
+    shapiro_all$sig[i] <- ""
+  }
+}
+
+shapiro_all
+```
+
+##**Linear model and plotting**
+Convert to numeric for lm
+```{r}
+ps_ra_porifera$nBlocks <- as.numeric(ps_ra_porifera$nBlocks)
+```
+
+select colors
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Run and plot linear regression model
+```{r}
+alpha <- ps_ra_porifera %>%
+  ggplot(aes(x = nBlocks, y = Abundance
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', color = "black") +
+  
+  # Add R² and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.25,      # 25% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  #Add regression line equation
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.3,          # 30% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  
+  #visual customizations
+  scale_y_continuous(limits = c(0, 1)) +
+ # scale_color_manual(color="black") +
+  ylab("Porifera relative abundance") +
+  xlab("Number of blocks") +
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 24),
+    axis.text.y = element_text(size = 24),
+    axis.title.x = element_text(size = 28),
+    axis.title.y = element_text(size = 28)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+# ggsave('biggerporifera_blocks_lm_PAV1_eDNA.png', plot=alpha,
+#        width = 7,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+#nBlocks and nDecapoda 
+
+##**Filtering and calculations**
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I selected 0.05 length
+ps
+
+#SELECT FILTER
+#ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#convert ps absolute ASV count into relative abundances by classification level
+ps_ra_deca <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Order") %>% 
+  psmelt() %>%
+  subset(Order == "Decapoda" & site_type == "Block", 
+         select = c(OTU, sample_id_location, nBlocks, Abundance,Superkingdom,Phylum,Class,Order))
+
+View(ps_ra_deca)
+dim(ps_ra_deca)
+```
+
+##**Check normality**
+
+Shapiro
+```{r}
+#create vector with unique Block counts
+blocks <- unique(ps_ra_deca$nBlocks)
+blocks
+
+#calculate the # of Shapiro tests to be run
+ntests <-length(blocks)
+
+#create empty df to store shapiro results
+shapiro_all <- data.frame(nBlocks = character(ntests),
+                     metric = character(ntests),
+                     w_stat = numeric(ntests),
+                     p_val=numeric(ntests))
+
+#determine normality using Shapiro Wilk test for relative abundance values of Decapoda 
+for (i in 1:ntests) {
+  qqPlot(ps_ra_deca$Abundance[ps_ra_deca$nBlocks==blocks[i]])
+  shapiro<-shapiro_test(ps_ra_deca$Abundance[ps_ra_deca$nBlocks==blocks[i]])
+  shapiro
+  shapiro_all$nBlocks[i] <- as.character(blocks[i])
+  shapiro_all$w_stat[i] <- unname(shapiro$statistic)
+  shapiro_all$p_val[i] <- shapiro$p.value
+  
+#add stars to make interpreting results easier
+  if (shapiro$p.value <= 0.01) {
+    shapiro_all$sig[i] <- "**"
+  } else if (shapiro$p.value <= 0.05) {
+    shapiro_all$sig[i] <- "*"
+  } else {
+    shapiro_all$sig[i] <- ""
+  }
+}
+
+shapiro_all
+```
+
+##**Linear model and plotting**
+Convert to numeric for lm
+```{r}
+ps_ra_deca$nBlocks <- as.numeric(ps_ra_deca$nBlocks)
+```
+
+Create color palette
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plotting linear regression of relative abundance of Decapoda vs Block count
+```{r}
+alpha <- ps_ra_deca %>%
+  ggplot(aes(x = nBlocks, y = Abundance
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', color = "black") +
+  
+  # Add R² and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.55,      # 55% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  # Add equation for regression line
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.6,          # 60% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+ #  scale_y_continuous(limits = c(0, NA)) +
+ # scale_color_manual(color="black") +
+  ylab("Decapoda relative abundance") +
+  xlab("Number of blocks") +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.2)+
+geom_hline(yintercept = 0, color = "black", linewidth = 0.2)+
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+# ggsave('decapoda_blocks_lm_PAV1_eDNA.png', plot=alpha,
+#        width = 7,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
+
+#nPorifera and nDecapoda 
+
+##**Filtering and calculations**
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05 length.
+ps
+#SELECT FILTER
+#ps_filter = filter_taxa(ps, function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+Calculate relative abundances of each Porifera phylum
+```{r Calculate relative abundance}
+#create relative abundance df of only ASVs where Phylum is Porifera
+ps_ra_dec_por <- transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  tax_glom("Phylum") %>% #combine to the order level
+  psmelt() %>%
+  subset(Phylum %in% c("Porifera", "Arthropoda"), 
+         select = c(OTU, sample_id_location, Abundance,Superkingdom,Phylum))
+
+#View(ps_ra_dec_por)
+dim(ps_ra_dec_por)
+```
+
+
+Select samples with both Porifera and decapoda detected 
+```{r}
+# Step 1: Identify samples that have *both* Porifera and Arthropoda present
+samples_dec_por <- ps_ra_dec_por %>%
+  # Keep only rows where the Phylum is either Porifera or Arthropoda
+  filter(Phylum %in% c("Porifera", "Arthropoda")) %>%
+  # Group by sample ID (with location)
+  group_by(sample_id_location) %>%
+  # Count how many *distinct phyla* are present in each sample
+  summarise(phylum_count = n_distinct(Phylum)) %>%
+  # Keep only samples that have both (i.e., 2 distinct phyla)
+  filter(phylum_count == 2) %>%
+  # Extract the sample IDs into a vector
+  pull(sample_id_location)
+
+# Step 2: Filter the main dataset to include only those samples with both phyla
+ra_both <- ps_ra_dec_por %>%
+  # Keep only the selected samples
+  filter(sample_id_location %in% samples_dec_por) %>%
+  # Reshape the data to wide format: separate columns for Porifera and Arthropoda abundances
+  pivot_wider(names_from = Phylum, values_from = Abundance)
+
+# Step 3: Summarize the abundance of each phylum in each sample
+ra_both_summary <- ra_both %>%
+  # Group by sample
+  group_by(sample_id_location) %>%
+  # Sum the abundances for Porifera and Arthropoda
+  summarise(
+    Porifera = sum(Porifera, na.rm = TRUE),
+    Arthropoda = sum(Arthropoda, na.rm = TRUE),
+    .groups = "drop"  # Drop grouping after summarising
+  )
+
+```
+
+
+##**Linear model and plotting (No check for normal dist)**
+
+Create color palette
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Graph linear regression
+```{r}
+alpha <- ra_both_summary %>%
+  ggplot(aes(x = Porifera, 
+             y = Arthropoda
+           #  ,color=Order
+             )) +
+  
+  theme_bw() +
+  geom_point(alpha = 0.75) +
+  geom_smooth(method = 'lm', color = "black") +
+  
+  # Add R² and p-value
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(..rr.label.., ..p.value.label.., sep = "~~~")),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    parse = TRUE,
+    label.y = 0.7,      # 70% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    rr.digits = 3,
+    size = 4
+  ) +
+  
+  #Add linear regression equation
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = ..eq.label..),
+    eq.with.lhs = "italic(hat(y))~`=`~",
+    eq.x.rhs = "~italic(x)",
+    parse = TRUE,
+    label.y = 0.6,          # 60% up from bottom on y-axis numeric scale
+    label.x = "right",
+    color = "black",
+    size = 4
+  ) +
+  
+  
+  #Visual adjustments
+  coord_cartesian(xlim = c(0, 0.26))+
+  
+  ylab("Decapoda relative abundance") +
+  xlab("Porifera relative abundance") +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.2)+
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.2)+
+  
+  theme(
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  ) +
+  
+  guides(color = guide_legend(keywidth = 0.2, keyheight = 0.4, ncol = 1))
+
+alpha
+
+# ggsave('decapoda_porifera_lm_PAV1_eDNA.png', plot=alpha,
+#        width = 7,
+#        height = 7,
+#        path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/linear_models")
+```
