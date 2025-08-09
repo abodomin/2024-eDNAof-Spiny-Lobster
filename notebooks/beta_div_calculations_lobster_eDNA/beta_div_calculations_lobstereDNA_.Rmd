@@ -1,0 +1,1427 @@
+---
+title: "Untitled"
+author: "Aiko Abo Dominguez"
+date: "2025-08-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Downloads
+installing and loading packages
+```{r, echo = TRUE, results = 'hide', message = FALSE, warning = FALSE}
+# Downloads
+
+# Function to install CRAN packages if not already installed
+install_if_missing <- function(pkgs) {
+  installed <- installed.packages()[, "Package"]
+  to_install <- setdiff(pkgs, installed)
+  if (length(to_install) > 0) {
+    install.packages(to_install)
+  }
+}
+
+# CRAN packages
+#install_if_missing(c("ggplot2", "ape", "vegan", "tidyverse", "sf", "mapview", "leaflet", "webshot2", "car", "rstatix", "RColorBrewer", "ggpmisc", "phyloseq", "limma", "microbiome"))
+
+# devtools (for GitHub installs)
+#install_if_missing("devtools")
+library(devtools)
+
+# GitHub packages
+#if (!"pairwiseAdonis" %in% installed.packages()[, "Package"]) {
+#  install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+#}
+
+#if (!"qiime2R" %in% installed.packages()[, "Package"]) {
+#  install_github("jbisanz/qiime2R")
+#}
+
+#devtools::install_github("kassambara/ggpubr")
+
+# Bioconductor setup
+# if (!"BiocManager" %in% installed.packages()[, "Package"]) {
+#   install.packages("BiocManager")
+# }
+
+# Install Bioconductor packages only if not present
+# bioc_pkgs <- c("phyloseq", "limma", "microbiome", "ANCOMBC")
+# for (pkg in bioc_pkgs) {
+#   if (!requireNamespace(pkg, quietly = TRUE)) {
+#     BiocManager::install(pkg)
+#   }
+# }
+
+# Install microViz package from R Universe
+# install.packages(
+#   "microViz",
+#   repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+# )
+
+# Loading required libraries
+library(qiime2R)
+library(sf)
+library(mapview)
+library(tidyverse)
+library(phyloseq)
+library(ggplot2)
+library(ape)
+library(vegan)
+library(leaflet)
+library(webshot2)
+library(ggpmisc)
+library(ggpubr)
+library(RColorBrewer)
+library(car)
+library(rstatix)
+library(limma)
+library(microbiome)
+library(pairwiseAdonis)
+library(microViz)
+
+```
+
+# Importing data and metadata editing
+
+##**Editing metadata file**
+
+```{r Importing and editing metadata file}
+#import file
+metadata <- read.csv("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/sample_metadata_PAV1_lobster_eDNA.csv")
+
+#change the name of the first column
+metadata$sample_id_old <- metadata$sample.id
+colnames(metadata)[1] <- "sample_id"
+
+#change "don" column to "site ID". "don" is what the FWC labels these sites as.
+colnames(metadata)[4] <- "site_id"
+
+#make function to truncate ID name
+truncate_before_second_underscore <- function(x) {
+  sapply(strsplit(x, "_"), function(parts) paste(parts[1:2], collapse = "_"))
+}
+
+metadata$sample_id <- truncate_before_second_underscore(metadata$sample_id)
+#View(metadata)
+
+#set column 1 as row names
+rownames(metadata) <- metadata$sample_id
+
+#make sure it is a dataframe
+metadata <- as.data.frame(metadata)
+#View(metadata)
+
+#setting variables to be numeric, as appropriate
+metadata$Lat <- as.numeric(metadata$Lat)
+metadata$Long <- as.numeric(metadata$Long)
+metadata$Total_Lobsters <- as.numeric(metadata$Total_Lobsters)
+metadata$EstimatedBiomass <- as.numeric(metadata$EstimatedBiomass)
+
+str(metadata)
+
+# Add a  column sample_id_location by pasting site_id and Replicate_new
+metadata$Replicate_new <- sub(".*_", "", metadata$Replicate)
+metadata$sample_id_location <- paste(metadata$site_id, metadata$Replicate_new, sep = "_")
+
+#add column for sample site ID based on latitude
+sites <- unique(metadata$Long)
+
+#sites
+metadata <- metadata %>%
+  mutate(site_letter = ifelse(Long==sites[1], "A",
+                   ifelse(Long==sites[2], "B",
+                   ifelse(Long==sites[3], "C",
+                   ifelse(Long==sites[4], "D",
+                   ifelse(Long==sites[5], "E",
+                   ifelse(Long==sites[6], "F", 
+                   ifelse(Long==sites[7],"G",
+                   ifelse(Long==sites[8], "H",
+                   ifelse(Long==sites[9], "I",
+                   ifelse(Long==sites[10], "J", 
+                   ifelse(Long==sites[11], "K",
+                   ifelse(Long==sites[12], "L", NA)))))))))))))
+unique(metadata$site_id)
+#View(metadata)
+
+#avg lobster mass
+metadata$avg_lobster_mass <- metadata$EstimatedBiomass/metadata$Total_Lobsters
+mean(metadata$avg_lobster_mass)
+sd(metadata$avg_lobster_mass)
+```
+
+
+
+Exporting coordinates
+```{r exporting coordinates}
+
+coordinates <- data.frame(
+  site_id = unique(metadata$site_id),
+  lat = unique(metadata$Lat),
+  long = unique(metadata$Long)
+)
+
+#write.csv(coordinates,file="PAV1_eDNA_sample_site_coordinates.csv")
+```
+
+
+
+##**Importing ASV sequences, taxa table, and phylogenetic tree**
+```{r Importing ASV sequences, taxa table, and phylogenetic tree}
+#sequence table from dada2 of forward reads, only eukaryotes
+seq_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/seq_ASVs_lobC16S_euks_fwd.qza")
+seq_table <- as.data.frame(seq_qza$data)
+
+
+#ASV table from dada2 of forward reads, only eukaryotes
+ASV_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/table_ASVs_lobC16S_euks_fwd.qza")
+ASV_table <- as.matrix(ASV_qza$data)
+#View(ASV_table)
+
+#truncating ASV column names to match "metadata" truncated sample names
+colnames(ASV_table) <- truncate_before_second_underscore(colnames(ASV_table))
+colnames(ASV_table) 
+metadata[,"sample_id"]
+
+#check that it worked
+rownames(metadata) <- metadata$sample_id
+all(rownames(metadata)%in%colnames(ASV_table))
+
+#import taxa from dada2 of forward reads
+taxa_qza <- read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/taxonomy_fwd.qza")
+taxa_table <- taxa_qza$data %>% select(-Consensus)
+taxa_table <- taxa_table %>%
+  as_tibble() %>%
+  separate(Taxon, sep=";", c("Superkingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")) %>%
+  arrange(Feature.ID) %>%
+  mutate(ASV = paste('ASV',1:n(), sep="_")) %>%
+  column_to_rownames("Feature.ID") %>%
+  as.matrix()
+
+#View(taxa_table)
+
+#Importing phylogenetic tree
+tree_file_qza <-read_qza("/Users/aikoabodominguez/Documents/eDNA_spiny_lobster/rooted_masked_aligned_seq_ASVs_lobC16S_euks_fwd.qza")
+tree_file<- tree_file_qza$data
+#View(tree_file)
+
+```
+
+
+
+# Phyloseq generation
+Generating phyloseq
+```{r Generating phyloseq}
+#generating object
+ps <- phyloseq(otu_table(t(ASV_table), taxa_are_rows=FALSE),
+              sample_data(metadata), 
+              tax_table(taxa_table), 
+              tree_file)
+ps
+```
+Identifying for NAs in ps filtered by taxonomic rank and turned into a df
+```{r Identify NAs}
+ps_filter = filter_taxa(ps, function(x) sum(x > 5) > (0.05*length(x)), TRUE) 
+ps_filter
+
+ps_na = transform_sample_counts(ps_filter, function(x) x / sum(x)) %>%
+  psmelt()
+
+order_NA <- subset(ps_na, Order=="NA")
+family_NA <- subset(ps_na, Family=="NA")
+genus_NA <- subset(ps_na, Genus=="NA")
+dim(order_NA)
+dim(family_NA)
+dim(genus_NA)
+
+#View(family_NA)
+
+#ASVs that are NA/missing in order, but genus is labelled
+na_ASVs <- setdiff(order_NA$OTU,genus_NA$OTU)
+na_ASVs
+
+#this ASV does not have Order, but does have Genus listed
+sum(order_NA$OTU=="a9d4ae9f0286fe9bdb3881218ea6b4c1")
+```
+
+Edit "NAs" from taxa table
+```{r}
+#adding back Order to taxa missing it, had to look up by hand
+taxa_table["a9d4ae9f0286fe9bdb3881218ea6b4c1", "Order"] <- "Neotaenioglossa"
+taxa_table["8ab5f93e9ac490a760599fb46ab9f46a", "Order"] <- "Hubrechtiiformes"
+
+```
+
+#Beta diversity calculations
+
+##Beta diversity Natural vs Block
+Filter all ps taxa for NAs
+```{r}
+ps_NArm <- ps %>%
+  subset_taxa(Superkingdom != "Unassigned")
+#%>% subset_taxa(Phylum != "NA")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. I chose 0.05
+
+#select filter
+#ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+#ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+CLR transformation for filtered ps for PERMANOVA and RDA
+
+```{r CLR transformation}
+ps_clr <- microbiome::transform(ps_filter, 'clr')
+ps_clr
+```
+
+Compute euclidian distance matrix based on the OTU/ASV table for PERMANOVA.
+```{r Create distance matrix}
+dis <- vegdist(otu_table(ps_clr), method ="euclidean")
+#test homogeneity of group dispersions (variances).
+mod <- betadisper(dis, sample_data(ps_clr)$site_type) #changed from site_id to Lat
+mod
+## Permutation test for F
+permutest(mod)
+```
+
+PERMANOVA 
+```{r Perform adnois}
+#convert meta data to dataframe
+df_clr= as(sample_data(ps_clr), "data.frame")
+colnames(df_clr)
+
+#running adonis2
+adonis2(otu_table(ps_clr) ~ site_type, 
+       data =df_clr, permutations = 999, 
+         method = "euc")
+```
+
+Perform RDA
+```{r RDA}
+ps.ord_clr <- ordinate(ps_clr, "RDA", "euclidean")
+```
+
+Choose RDA plot colors
+```{r Select RDA plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c("red", "blue"))
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+RDA of subset of sites 2,7,14,17,11
+```{r}
+#subset to sites 2,7,14,17,11
+ps_clr_sub <- subset_samples(ps_clr, site_id %in% c("2","7","14","17","11"))
+  
+ps.ord_clr_sub <- ps.ord_clr <- ordinate(ps_clr_sub, "RDA", "euclidean")
+  
+beta = plot_ordination(ps_clr_sub, ps.ord_clr_sub,color="site_type") +
+       scale_color_manual(values=mycolors(2), labels=c("Block","Natural")) +
+       theme_classic() +
+       theme(legend.text =element_text(size=8)) +
+       theme(legend.title = element_text(size=10)) +
+       theme(axis.title.x = element_text(size = 10)) +
+       theme(axis.title.y = element_text(size = 10)) +
+       theme(axis.text.x = element_text(size =8)) +
+       theme(axis.text.y = element_text(size =8)) +
+       labs(color='Site type') +
+       geom_text(aes(label=site_id), hjust = 0, nudge_x = 0.1, size=2)
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+ggsave('RDA_by_site_type_ra_PAV1_eDNA.png', plot=beta,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures")
+```
+
+Plot RDA
+```{r Plot RDA}
+
+beta = plot_ordination(ps_clr, ps.ord_clr,color="site_type") +
+       scale_color_manual(values=mycolors(2), labels=c("Block","Natural")) +
+       theme_classic() +
+       theme(legend.text =element_text(size=8)) +
+       theme(legend.title = element_text(size=10)) +
+       theme(axis.title.x = element_text(size = 10)) +
+       theme(axis.title.y = element_text(size = 10)) +
+       theme(axis.text.x = element_text(size =8)) +
+       theme(axis.text.y = element_text(size =8)) +
+       labs(color='Site type')# +
+      # geom_text(aes(label=site_type), hjust = 0, nudge_x = 0.1, size=2)
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+ggsave('RDA_by_site_type_ra_PAV1_eDNA.png', plot=beta,
+       path = "/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures")
+
+```
+
+
+##Beta diversity sites 4 and 5
+Filter all ps taxa for NAs
+```{r}
+
+ps_NArm <- ps %>%
+  subset_taxa(Kingdom != "Unassigned")
+#%>% subset_taxa(Phylum != "NA")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+CLR transformation for filtered ps for PERMANOVA and RDA
+
+```{r CLR transformation}
+ps_clr <- microbiome::transform(ps_filter, 'clr')
+ps_clr
+```
+
+Compute euclidian distance matrix based on the OTU/ASV table for PERMANOVA.
+
+```{r Create distance matrix}
+dis <- vegdist(otu_table(ps_clr), method ="euclidean")
+#test homogeneity of group dispersions (variances).
+mod <- betadisper(dis, sample_data(ps_clr)$Lat) #changed from site_id to Lat
+mod
+## Permutation test for F
+permutest(mod)
+```
+
+
+PERMANOVA 
+```{r Perform adnois}
+#convert meta data to dataframe
+df_clr= as(sample_data(ps_clr), "data.frame")
+colnames(df_clr)
+
+#subset sites 4 and 5
+df_clr_4_5 <- df_clr[]
+
+#running adonis2
+adonis2(otu_table(ps_clr) ~ site_type, 
+       data =df_clr, permutations = 999, 
+         method = "euc")
+
+#pairwise adonis 
+devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+library(pairwiseAdonis)
+
+pairwise_adonis <- pairwise.adonis2(otu_table(ps_clr) ~ Don,
+                 data=df_clr, permutations=999,
+                 method = "euc")
+
+#pairwise adonis using bray curtis
+ps_rel <- microbiome::transform(ps,"compositional")
+df_rel= as(sample_data(ps_rel), "data.frame")
+
+dist_bray <- vegdist(df_rel,method="bray")
+
+pairwise_adonis_bray <- pairwise.adonis2(otu_table(dis)~ site_id,
+                 data=df_rel, permutations=999,
+                 method = "bray")
+pairwise_adonis_bray
+```
+
+
+Perform RDA
+```{r RDA}
+ps.ord_clr <- ordinate(ps_clr, "RDA", "euclidean")
+```
+
+Choose RDA plot colors
+```{r Select RDA plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c("red", "blue"))
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot RDA
+```{r Plot RDA}
+
+beta = plot_ordination(ps_clr, ps.ord_clr,color="latitude") +
+       scale_color_manual(values=mycolors(12)) +
+       theme_classic() +
+       theme(legend.text =element_text(size=4)) +
+       theme(legend.title = element_text(size=4)) +
+       theme(axis.title.x = element_text(size = 5)) +
+       theme(axis.title.y = element_text(size = 5)) +
+       theme(axis.text.x = element_text(size =4)) +
+       theme(axis.text.y = element_text(size =4)) +
+       labs(color='Site ID') 
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+#ggsave('spiny_lobster_ra_RDA.png', plot=beta,
+   #    path = "/Users/aiko.abo.dominguez/Desktop/Spiny_lobster_project/R_code/figures")
+
+```
+
+
+## Beta diversity all sites
+
+Filter all ps taxa for NAs
+```{r}
+
+ps_NArm <- ps %>%
+  subset_taxa(Kingdom != "Unassigned")
+#%>% subset_taxa(Phylum != "NA")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+CLR transformation for filtered ps for PERMANOVA and RDA
+
+```{r CLR transformation}
+ps_clr <- microbiome::transform(ps_filter, 'clr')
+ps_clr
+```
+
+Compute euclidian distance matrix based on the OTU/ASV table for PERMANOVA.
+
+```{r Create distance matrix}
+dis <- vegdist(otu_table(ps_clr), method ="euclidean")
+#test homogeneity of group dispersions (variances).
+mod <- betadisper(dis, sample_data(ps_clr)$Lat) #changed from site_id to Lat
+mod
+## Permutation test for F
+permutest(mod)
+```
+
+Non-metric multidimensional scaling to compare community structure among samples based on the binary dataset using Sorenson's distance matrix. Prior to PERMANOVA
+
+PERMANOVA 
+```{r Perform adnois}
+#convert meta data to dataframe
+df_clr= as(sample_data(ps_clr), "data.frame")
+colnames(df_clr)
+
+#running adonis2
+adonis2(otu_table(ps_clr) ~ site_id, 
+       data =df_clr, permutations = 999, 
+         method = "euc")
+
+#subset L vs A site IDs to test if it's working
+ps_L_A <- subset_samples(ps_clr, site_id %in% c("A", "L"))
+df_clr_LA <- subset(df_clr, site_id %in% c("A", "L"))
+
+test <- adonis2(otu_table(ps_L_A) ~ site_id, 
+       data =df_clr_LA, permutations = 999, 
+         method = "euc")
+test
+
+#pairwise adonis 
+devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+library(pairwiseAdonis)
+
+pairwise_adonis <- pairwise.adonis2(otu_table(ps_clr) ~ Don,
+                 data=df_clr, permutations=999,
+                 method = "euc")
+
+#pairwise adonis using bray curtis
+ps_rel <- microbiome::transform(ps,"compositional")
+df_rel= as(sample_data(ps_rel), "data.frame")
+
+dist_bray <- vegdist(df_rel,method="bray")
+
+pairwise_adonis_bray <- pairwise.adonis2(otu_table(dis)~ site_id,
+                 data=df_rel, permutations=999,
+                 method = "bray")
+pairwise_adonis_bray
+```
+
+
+Perform RDA
+```{r RDA}
+ps.ord_clr <- ordinate(ps_clr, "RDA", "euclidean")
+```
+
+Choose RDA plot colors
+```{r Select RDA plot colors}
+#continuous colors
+mycolors <- colorRampPalette(c("red", "blue"))
+
+#categorical colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+
+Plot RDA
+```{r Plot RDA}
+
+beta = plot_ordination(ps_clr, ps.ord_clr,color="latitude") +
+       scale_color_manual(values=mycolors(12)) +
+       theme_classic() +
+       theme(legend.text =element_text(size=4)) +
+       theme(legend.title = element_text(size=4)) +
+       theme(axis.title.x = element_text(size = 5)) +
+       theme(axis.title.y = element_text(size = 5)) +
+       theme(axis.text.x = element_text(size =4)) +
+       theme(axis.text.y = element_text(size =4)) +
+       labs(color='Site ID') 
+# theme(legend.position = "none",
+ #     panel.grid.minor.x = element_blank())
+
+beta
+#ggsave('spiny_lobster_ra_RDA.png', plot=beta,
+   #    path = "/Users/aiko.abo.dominguez/Desktop/Spiny_lobster_project/R_code/figures")
+
+```
+
+
+##ANCOMBC2
+Identify taxa that have different abundances across sample sites. 
+
+ANCOMBC2 fits a linear model to the species relative abundances that have been log-transformed across sample sites (or the variables in the chosen formula)
+
+Description of output values of the model:
+
+  lfc = log fold change = beta value (regression coefficient) for the first group compared to the group w/ name in the column. 
+  se = standard error of lfc
+  W = W-statistic, larger values indicate stronger evidence of differential abundance
+  p = p-value 
+  Q = PDR-corrected p-value (using Benjamini-Hochberg or similar correction)
+  diff = TRUE/FALSE taxa has differential abundance based on Q
+  passed_ss = TRUE/FALSE passed sample size check: whether the taxon has the minimum prevalence/sample size criteria for inclusion
+  diff_robust = more conservative flag for differential abundance, controlling fro statisticall ssignificance and robustness
+
+
+###ANCOMBC2 all sites
+####Filter ps and ANCOMBC
+```{r}
+ps_NArm <- ps %>%
+  subset_taxa(Kingdom != "Unassigned")
+```
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+ps
+#select filter
+ps_filter = filter_taxa(ps , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+ANCOMBC
+```{r Identify taxa that have different abundances across sample sites}
+set.seed(123)
+out <- ancombc2(
+  data = ps_filter,                        # your phyloseq object
+  tax_level = "ASV",               # or Genus/Family/etc. if aggregated
+  fix_formula = "site_id",             # your variable of interest
+  p_adj_method = "holm",            # False Discovery Rate correction. try holm
+  pairwise=TRUE,
+  prv_cut = 0,     # Remove taxa with X% zeros across samples
+  lib_cut = 1000, # Filter samples with library size < 1000
+  struc_zero = TRUE,           # Identify taxa structurally absent in a group
+  group="site_id",
+  n_cl=4,
+  alpha = 0.001,               # alpha value for significance
+  global = TRUE               # Don't perform global test across all levels  
+)
+
+res_pair = out$res_pair
+res_site = out$res
+View(res_pair)
+```
+
+####Arrange results
+Sort significant pairs DIFF AND DIFF_ROBUST
+
+```{r}
+# Identify relevant column groups
+lfc_cols <- grep("^lfc_site_id\\d+_site_id\\d+$", names(res_pair), value = TRUE)
+base_names <- sub("^lfc_", "", lfc_cols)
+se_cols <- paste0("se_", base_names)
+diff_cols <- paste0("diff_", base_names)
+diff_robust_cols <- paste0("diff_robust_", base_names)
+
+# Select all necessary columns
+res_pair_sig <- res_pair %>%
+  select(taxon, all_of(lfc_cols), all_of(se_cols), all_of(diff_cols), all_of(diff_robust_cols)) %>%
+  pivot_longer(
+    cols = -taxon,
+    names_to = c(".value", "comparison"),
+    names_pattern = "^(lfc|se|diff|diff_robust)_(site_id\\d+_site_id\\d+)$"
+  ) %>%
+  filter(diff == TRUE) %>%  # Filter on non-robust diff
+  mutate(
+    site_A = str_match(comparison, "^site_id(\\d+)")[, 2],
+    site_B = str_match(comparison, "_site_id(\\d+)$")[, 2]
+  ) %>%
+  select(taxon, site_A, site_B, lfc, se, diff_robust)  # Keep robust flag
+
+  
+#Add site_type columns by matching site_A and site_B to metadata$site_id
+res_pair_sig$site_type_A <- metadata$site_type[match(res_pair_sig$site_A, metadata$site_id)]
+res_pair_sig$site_type_B <- metadata$site_type[match(res_pair_sig$site_B, metadata$site_id)]
+
+#add significance
+
+res_pair_sig <- res_pair_sig%>%
+  mutate(sig=ifelse(diff_robust==TRUE,"*","")) 
+
+
+```
+
+Sort significant pairs PASSED_SS
+
+```{r}
+# Identify relevant column groups
+lfc_cols <- grep("^lfc_site_id\\d+_site_id\\d+$", names(res_pair), value = TRUE)
+base_names <- sub("^lfc_", "", lfc_cols)
+se_cols <- paste0("se_", base_names)
+passed_ss <- paste0("passed_ss_", base_names)
+
+# Select all necessary columns
+res_pair_sig <- res_pair %>%
+  select(taxon, all_of(lfc_cols), all_of(se_cols), all_of(passed_ss)) %>%
+  pivot_longer(
+    cols = -taxon,
+    names_to = c(".value", "comparison"),
+    names_pattern = "^(lfc|se|passed_ss)_(site_id\\d+_site_id\\d+)$"
+  ) %>%
+  mutate(
+    site_A = str_match(comparison, "^site_id(\\d+)")[, 2],
+    site_B = str_match(comparison, "_site_id(\\d+)$")[, 2]
+  ) %>%
+  select(taxon, site_A, site_B, lfc, se, passed_ss)   
+
+nrow(res_pair_sig)
+
+res_pair_sig=res_pair_sig %>%
+  filter(abs(lfc)>2)
+
+nrow(res_pair_sig)
+  
+#Add site_type columns by matching site_A and site_B to metadata$site_id
+res_pair_sig$site_type_A <- metadata$site_type[match(res_pair_sig$site_A, metadata$site_id)]
+res_pair_sig$site_type_B <- metadata$site_type[match(res_pair_sig$site_B, metadata$site_id)]
+
+```
+
+
+Adding significant ASV info to taxon identity
+```{r Adding significant ASV info to taxon identity}
+
+#  create taxa_df from tax_table(ps_filter)
+taxa_df <- tax_table(ps_filter) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "taxon")
+
+# Join with taxa_df by taxon
+res_pair_sig <- res_pair_sig %>%
+  left_join(taxa_df, by = "taxon")
+
+
+View(res_pair_sig)
+
+```
+
+Reformat data for graphing PASSSED_SS
+
+```{r}
+
+res_sites <- res_pair_sig %>%
+  filter(site_type_A != site_type_B) %>%
+  filter(site_type_A=="Block") %>%
+  mutate(
+    site_Natural = ifelse(site_type_A == "Natural", site_A, site_B),
+    site_Block   = ifelse(site_type_A == "Block", site_A, site_B),
+    lfc_Natural = ifelse(site_type_A == "Natural", lfc, -lfc),
+    se_Natural = se,
+    comparison = paste("Site",site_Natural,"vs site",site_Block),
+    direction = ifelse(lfc_Natural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural")),
+    text_pos= ifelse(lfc_Natural >= 0, lfc_Natural + se_Natural + 1, lfc_Natural - se_Natural - 1)
+  ) 
+  
+
+taxa <- unique(res_sites$taxon)
+
+```
+Reformat data for graphing ROBUST
+
+```{r}
+#Remove same site type comparisons
+
+res_sites <- res_pair_sig %>%
+  filter(site_type_A != site_type_B) %>%
+  mutate(
+    site_Natural = ifelse(site_type_A == "Natural", site_A, site_B),
+    site_Block   = ifelse(site_type_A == "Block", site_A, site_B),
+    lfc_Natural = ifelse(site_type_A == "Natural", lfc, -lfc),
+    se_Natural = se,
+    comparison = paste("Site",site_Natural,"vs site",site_Block),
+    direction = ifelse(lfc_Natural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural")),
+    text_pos= ifelse(lfc_Natural >= 0, lfc_Natural + se_Natural + 1, lfc_Natural - se_Natural - 1)
+  ) 
+  
+
+taxa <- unique(res_sites$taxon)
+taxa
+```
+
+####Plotting
+Plot one taxa
+
+```{r Ancombc graph}
+install.packages("ggsignif")
+library(ggsignif)
+
+#choose colors
+
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+
+#make graph
+test <- res_sites %>% filter(taxon==taxa["c1b91c841c94a5b44ba711dba35df622"])
+
+#make graph
+ancom_fig <- res_sites %>%
+  filter(taxon == taxa[2]) %>%
+  ggplot(aes(x = comparison, y = lfc_Natural)) + 
+  geom_bar(stat = "identity", width = 1,
+           color = "black",
+           aes(fill = direction)) +
+  geom_errorbar(
+    aes(
+      ymin = lfc_Natural - se_Natural,
+      ymax = lfc_Natural + se_Natural
+    ),
+    width = 0.1,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+  coord_flip() +
+  scale_y_continuous(limits = c(-6.8, 6.8), expand = expansion(mult = c(0, 0))) +
+  scale_fill_manual(values = c("#8DA0CB", "#E41A1C")) +
+  theme_bw() + 
+  labs(
+    title="Porifera A",
+    y = "Log fold change (Natural vs Artificial Site)",
+    x = "",
+    fill = "Site type"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(size = 18,hjust=.5),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.y = element_text(size = 12),
+    axis.text.x = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.background = element_blank(),
+    strip.text.y.left = element_text(angle = 0)
+  ) +
+  #geom_text(aes(x = text_x, label = sig), size = 9) +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.5)
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/ANCOMBC_ASVlevel_allsites_poriferaB_PAV1_eDNA.png",
+     width = 7, height = 5, units = "in", dpi=300)
+```
+
+Plot ALL results PASSED_SS
+```{r}
+taxa.labs <- res_sites %>%
+  distinct(taxon, Phylum) %>%
+  deframe()
+
+#make graph
+ancom_fig <- res_sites %>%
+  ggplot(aes(x = comparison, y = lfc_Natural)) + 
+  geom_bar(stat = "identity", width = .75,
+           color = "black",
+           aes(fill = direction)) +
+  geom_errorbar(
+    aes(
+      ymin = lfc_Natural - se_Natural,
+      ymax = lfc_Natural + se_Natural
+    ),
+    width = 0.2,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+  facet_grid(. ~ taxon, scales = "free_y", labeller = as_labeller(taxa.labs,default=label_wrap_gen(10))) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0.01, 0.01))) +
+  scale_fill_manual(values = mycolors(2)) +
+  theme_classic() + 
+  labs(
+    title="Taxon",
+    y = "Log fold change (Natural vs Artificial Site)",
+    x = "Site comparison",
+    fill = "Site type"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(size = 30,hjust=.5,vjust=0.2,margin=margin(t=10)),
+    axis.title.x = element_text(size = 26,
+                                margin=margin(t=10)
+                                ),
+    axis.title.y = element_text(size = 26,margin=margin(r=10)),
+    axis.text.y = element_text(size = 22),
+    axis.text.x = element_text(size = 22),
+    legend.text = element_text(size = 22),
+    legend.title = element_text(size = 26),
+    strip.background = element_blank(),
+    strip.text = element_text(size=20)
+  ) +
+  #geom_text(aes( y=text_pos,label = sig), nudge_x=-0.14,size = 9) +
+  geom_hline(yintercept = 0, color = "black", linewidth = .5)
+
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/pass_ss_ANCOMBC_ASVlevel_allSites_PAV1_eDNA.png",
+     width = 30, height = 40, units = "in", dpi=300)
+```
+
+
+Plot ALL results ROBUST
+```{r}
+taxa.labs <- res_sites %>%
+  distinct(taxon, Phylum) %>%
+  deframe()
+
+#make graph
+ancom_fig <- res_sites %>%
+  ggplot(aes(x = comparison, y = lfc_Natural)) + 
+  geom_bar(stat = "identity", width = .75,
+           color = "black",
+           aes(fill = direction)) +
+  geom_errorbar(
+    aes(
+      ymin = lfc_Natural - se_Natural,
+      ymax = lfc_Natural + se_Natural
+    ),
+    width = 0.2,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+  facet_grid(. ~ taxon, scales = "free_y", labeller = as_labeller(taxa.labs,default=label_wrap_gen(10))) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0.01, 0.01))) +
+  scale_fill_manual(values = mycolors(2)) +
+  theme_classic() + 
+  labs(
+    title="Taxon",
+    y = "Log fold change (Natural vs Artificial Site)",
+    x = "Site comparison",
+    fill = "Site type"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(size = 30,hjust=.5,vjust=0.2,margin=margin(t=10)),
+    axis.title.x = element_text(size = 26,
+                                margin=margin(t=10)
+                                ),
+    axis.title.y = element_text(size = 26,margin=margin(r=10)),
+    axis.text.y = element_text(size = 22),
+    axis.text.x = element_text(size = 22),
+    legend.text = element_text(size = 22),
+    legend.title = element_text(size = 26),
+    strip.background = element_blank(),
+    strip.text = element_text(size=20)
+  ) +
+  #geom_text(aes( y=text_pos,label = sig), nudge_x=-0.14,size = 9) +
+  geom_hline(yintercept = 0, color = "black", linewidth = .5)
+
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/ANCOMBC_ASVlevel_allSites_PAV1_eDNA.png",
+     width = 30, height = 40, units = "in", dpi=300)
+```
+
+
+
+###ANCOMBC2 Natural vs Block
+
+####Filter ps and ANCOMBC
+
+```{r}
+ps_NArm <- ps %>%
+  subset_taxa(Superkingdom != "Unassigned")
+ps_NArm
+```
+
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+ps
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+ANCOMB
+```{r Identify taxa that have different abundances across sample sites}
+set.seed(123)
+###HOLM correction
+out <- ancombc2(
+  data = ps_filter,                        # your phyloseq object
+  tax_level = "ASV",               # or Genus/Family/etc. if aggregated
+  fix_formula = "site_type",             # your variable of interest
+  p_adj_method = "holm",            # False Discovery Rate correction. try holm
+  pairwise=FALSE,
+  prv_cut = 0,     # Remove taxa with X% zeros across samples
+  lib_cut = 1000, # Filter samples with library size < 1000
+  struc_zero = TRUE,           # Identify taxa structurally absent in a group
+  group="site_type",
+  n_cl=4,
+  alpha = 0.001,               # alpha value for significance
+  global = FALSE               # Don't perform global test across all levels  
+)
+
+#save outputs 
+res = out$res
+View(res)
+
+
+```
+
+####Arrange results
+Adding taxonomy to ANCOMBC results 
+```{r Adding significant ASV info to taxon identity}
+library(purrr)
+library(stringr)
+
+#create a reference taxa table to assign ASV to res table 
+taxa_df <- tax_table(ps_filter) %>% as.data.frame() %>% rownames_to_column(var = "taxon") 
+ancomb_df = res %>% left_join(taxa_df, by = "taxon")
+
+#View(ancomb_df)
+
+```
+
+filter for significance
+
+```{r}
+ancomb_sig = ancomb_df %>%
+  filter(passed_ss_site_typeNatural == "TRUE") %>%
+  filter(abs(lfc_site_typeNatural)> 2) 
+dim(ancomb_sig)
+
+#print ASVs with low taxonomy resolution
+no_phylum <- ancomb_sig[ancomb_sig$Phylum=="Eukaryota Superkingdom",]
+no_phylum
+
+no_kingdom <- ancomb_sig[ancomb_sig$Phylum=="Unassigned Superkingdom",]
+#View(no_kingdom)
+
+#add sequences
+seq_df <- seq_table%>% as.data.frame() %>% rownames_to_column(var = "taxon") %>% rename(seq=x)
+no_kingdom = no_kingdom %>% left_join(seq_df, by = "taxon") 
+seq_no_kingdom = subset(no_kingdom,select=c(taxon,seq))
+View(seq_no_kingdom)
+
+write_csv(seq_no_kingdom,path="/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/seq_no_kingdom.csv")
+
+#remove these ASVs with low taxonomy resolution
+ancomb_sig_clean = ancomb_sig%>% anti_join(manual_blast, by="taxon")
+dim(ancomb_sig_clean)
+View(ancomb_sig_clean)
+```
+
+####Plotting
+Choose colors
+```{r}
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+```
+
+PLOT RESULTS version 1
+
+```{r Ancombc graph}
+#choose colors
+
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+#choose labels
+combo_labs <- as_labeller(c("Block" = "Block",
+                          "Natural" = "Natural"), default = label_parsed)
+#make graph
+
+ancom_fig <- ancomb_sig_clean %>%
+  #filter(diff_site_typeNatural == "TRUE") %>%
+  #filter for passed_ss and then filter lfcs >= 2
+  filter(passed_ss_site_typeNatural == "TRUE") %>%
+  filter(abs(lfc_site_typeNatural)> 2) %>%
+  
+  #create column to determine color and direction
+  mutate(
+    direction = ifelse(lfc_site_typeNatural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural"))
+  ) %>%
+  
+  #make bar plot
+  ggplot(aes(lfc_site_typeNatural, y = taxon)) + 
+  geom_bar(stat = "identity", width = 1,
+           color="black",
+           aes(fill=direction)) +
+  scale_fill_manual(values = mycolors(2)) +
+  theme_bw() + 
+  geom_errorbar(
+    aes(
+      xmin = lfc_site_typeNatural - se_site_typeNatural,
+      xmax = lfc_site_typeNatural + se_site_typeNatural
+    ),
+    width = 0.1,
+    position = position_dodge(0.03),
+    color = "black",
+    alpha = 1
+  ) +
+ # facet_grid(.~Phylum, space = "free", scales = "free", switch = "y", labeller = labeller(direction = combo_labs,default=label_wrap_gen(10))) +
+  facet_grid(Phylum ~ ., space = "free", scales = "free", switch = "y", labeller = labeller(direction = as_labeller(combo_labs))) +
+  scale_color_manual(values = mycolors(2)) +
+  scale_x_continuous(limits = c(-7, 7),breaks=seq(-7, 7, by = 1)) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor.x = element_blank(),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.ticks.y = element_blank(), 
+   # axis.text.y = element_text(size = 12),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 12),
+    
+    # strip.text.y = element_blank(),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.background = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    # axis.text.x = element_text(angle = 90, hjust = 1),
+    strip.text.y = element_text(size = 12)
+  ) +
+   labs(
+    y = "Phylum",
+    x = "Block vs Natural Site (Log fold change)",
+    fill = "Site type"
+  ) +
+  geom_vline(xintercept = 0, color = "black", linewidth = 0.5)
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/v2passed_ssANCOMBC_ASVlevel_site_type_PAV1_eDNA.png",
+     width = 7, height = 5, units = "in", dpi=300)
+```
+
+
+Plot results version 2
+```{r}
+combo_labs <- as_labeller(c("Block"="Block","Natural"="Natural"))
+
+ancombc_fig <- ancomb_sig_clean %>%
+ #filter(diff_site_typeNatural == "TRUE") %>%
+  filter(passed_ss_site_typeNatural == "TRUE") %>%
+  filter(abs(lfc_site_typeNatural)> 2) %>%
+ 
+  mutate(
+    direction = ifelse(lfc_site_typeNatural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural"))
+  ) %>%
+  ggplot(aes(x = reorder(ASV, lfc_site_typeNatural), y = lfc_site_typeNatural, fill = direction)) +
+  geom_bar(stat = "identity", color = "black",width=1,linewidth=1) +
+  geom_errorbar(aes(ymin = lfc_site_typeNatural - se_site_typeNatural, 
+                    ymax = lfc_site_typeNatural + se_site_typeNatural), width = 0.2,linewidth=1) +
+  labs(
+    x = "ASVs",
+    y = "Log2 Fold Change",
+    fill = "Direction") +
+  scale_fill_manual(values = mycolors(2)) +
+
+  facet_grid(Phylum ~ direction, space = "free", scales = "free", switch = "y", labeller = labeller(direction = as_labeller(combo_labs))) +
+  
+
+  coord_flip() +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text(size = 30),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_blank(),
+    strip.text.x = element_text(size = 30),
+    strip.text.y = element_text(size=30),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 10),
+    legend.position = "none",
+    panel.spacing.x = unit(0.0, "lines"),
+    panel.spacing.y = unit(0.0, "lines")
+  ) 
+#theme(axis.text.x = element_text(angle = 60, hjust = 1)) 
+ancombc_fig
+
+ggsave("/Users/aiko.abo.dominguez/Desktop/PAV1_eDNA_project/R_code/figures/ANCOMBC/test3.png",
+     width = 10, height = 20, units = "in", dpi=300)
+
+```
+
+```{r}
+library(stringr)
+combo_labs <- as_labeller(c("Block"="Block","Natural"="Natural"))
+
+
+# Wrap y-axis facet labels (Order)
+order_labeller <- function(labels) {
+  str_wrap(labels, width = 10)
+}
+
+ancombc_fig <- ancomb_df %>%
+  filter(diff_site_typeNatural == "TRUE") %>%
+  mutate(
+    direction = ifelse(lfc_site_typeNatural > 0, "Natural", "Block"),
+    direction = factor(direction, levels = c("Block", "Natural"))
+  ) %>%
+  ggplot(aes(x = reorder(ASV, lfc_site_typeNatural), y = lfc_site_typeNatural, fill = direction)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_errorbar(aes(ymin = lfc_site_typeNatural - se_site_typeNatural, 
+                    ymax = lfc_site_typeNatural + se_site_typeNatural), width = 0.2) +
+  labs(
+    x = "ASVs",
+    y = "Log2 Fold Change",
+    fill = "Direction"
+  ) +
+  scale_fill_manual(values = mycolors(2)) +
+  facet_grid(Order ~ direction, 
+             space = "free", 
+             scales = "free", 
+             switch = "y", 
+             labeller = labeller(
+               direction = as_labeller(combo_labs),
+               Order = as_labeller(order_labeller)
+             )) +
+  coord_flip() +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_blank(),
+    strip.text.x = element_text(size = 10),
+    strip.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 10),
+    legend.position = "none",
+    panel.spacing.x = unit(0.0, "lines"),
+    panel.spacing.y = unit(0.0, "lines")
+  )
+ancombc_fig
+```
+
+
+
+
+
+### ANCOMBC2 Natural sites: north vs south
+Filter all ps taxa for abundance
+```{r Filter all ps taxa for abundance}
+#filtering taxa. Keeps ASVs where its abundance is greater than 10 in more than 10% of samples. Adjust to see what happens. 30% looks like it cuts out a lot (8879 taxa to 540), so maybe lower this?
+
+#select filter
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 10) > (0.10*length(x)), TRUE) %>% tax_fix()
+ps_filter
+
+ps_filter = filter_taxa(ps_NArm , function(x) sum(x > 5) > (0.05*length(x)), TRUE) %>% tax_fix()
+ps_filter
+```
+
+ANCOMB
+```{r Identify taxa that have different abundances across sample sites}
+out <- ancombc2(
+  data = ps,                        # your phyloseq object
+  tax_level = "Order",               # or Genus/Family/etc. if aggregated
+  fix_formula = "site_type",             # your variable of interest
+  p_adj_method = "holm",            # False Discovery Rate correction
+  prv_cut = 0.05,     # Remove taxa with X% zeros across samples
+  lib_cut = 1000, # Filter samples with library size < 1000
+  group = "site_type",               # for post-hoc contrasts (optional)
+  struc_zero = TRUE,           # Identify taxa structurally absent in a group
+  neg_lb = TRUE,               # Use negative lower bound correction for inference
+  alpha = 0.005,               # alpha value for significance
+  global = FALSE#,               # Don't perform global test across all levels  
+  
+#  iter_control = list(tol=1e-7, #iteration convergence tolerance for estimation-maximation algorithm
+  #                    max_iter=100, #maximum # of iterations for estimation-maximation algorithm
+  #                    verbose=FALSE)
+)
+
+res_type = out$res
+View(res_type)
+
+```
+
+
+extract beta and standard error values from ancombc. 
+```{r extract beta and standard error values}
+#extract values
+res_sort <- res_type %>%
+  pivot_longer(
+    cols = -taxon,
+    names_to = c("metric", "site_type"),
+    names_pattern = "^(.*)_(site_type.*|\\(Intercept\\))$",
+    values_to = "value"
+  ) %>%
+  mutate(
+    # Rename (Intercept) to a Block
+    site_type = ifelse(site_type == "(Intercept)", "Block", "Natural")
+    
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  ) 
+#%>%
+#  mutate(taxon = sub("_[^_]*$", "", taxon))
+
+#print number of significant and non-significant taxa
+length(res_sort$diff[res_sort$diff==1])
+length(res_sort$diff[res_sort$diff==0])
+
+length(res_sort$passed_ss[res_sort$passed_ss==1])
+length(res_sort$passed_ss[res_sort$passed_ss==0])
+
+#isolate lfcs and se of only ROBUST differences in abundance
+res_sig <- data.frame(lfc = res_sort$lfc*res_sort$diff_robust, #keeps only significantly abundant OTUs
+                       taxon = res_sort$taxon,
+                       site_type = res_sort$site_type,
+                       SE = res_sort$se,
+                      diff_robust = res_sort$diff_robust,
+                     check.names = FALSE) %>%
+  filter(diff_robust>0)#prevents R from altering the column/row names
+
+#isolate lfcs and se of only NON-ROBUST differences in abundance
+res_sig <- data.frame(lfc = res_sort$lfc*res_sort$diff, #keeps only significantly abundant OTUs
+                       taxon = res_sort$taxon,
+                       site_type = res_sort$site_type,
+                       SD = res_sort$se,
+                      diff = res_sort$diff,
+                     check.names = FALSE) %>%
+  filter(diff>0)#prevents R from altering the column/row names
+```
+
+Adding significant ASV info to taxon identity
+```{r Adding significant ASV info to taxon identity}
+library(purrr)
+library(stringr)
+
+
+
+#create a reference taxa table to assign OTU to res table NVM I DONT THINK THIS WORKS BC THERE ARE MULTIPLE OTUS PER TAXA
+
+taxa_table_sig <- as.data.frame(taxa_table) %>%
+  rownames_to_column(var = "OTU") %>%
+  mutate_all(~ ifelse(is.na(.), "Unknown", .)) %>%
+  mutate_all(~ ifelse(.=="NA", "Unknown", .))%>% 
+  mutate(taxon = pmetadata_chr(select(., 2:9), ~ str_c(..., sep = "_"))) 
+  
+
+
+res_sig <- left_join(
+  res_sig,
+  select(taxa_table_sig, taxon, OTU, Order),
+  by = "taxon"
+)
+
+#save all this for the particular taxonomic rank of interest
+res_sig_taxon <- res_sig
+
+```
+
+Graph
+
+```{r Ancombc graph}
+#choose colors
+mycolors <- colorRampPalette(c(brewer.pal(9, "Set1"),
+                               brewer.pal(3, "Set2")))
+
+#make graph
+
+ancom_fig = res_sig %>%
+
+  ggplot(aes(lfc, y = Order)) + 
+  geom_point(aes(color=site_type)) +
+     #geom_bar(stat = "identity", width = 1) +
+             #, position = position_(width = 0.3)) +
+  theme_bw() + 
+  theme(legend.position = "top", 
+        panel.grid.minor.x = element_blank()) +
+    
+  geom_errorbar(aes(xmin = lfc - SD, xmax = lfc + SD),
+                  width = 0.2,
+                  position = position_dodge(0.03), color = "black", alpha=0.5) + 
+  #scale_fill_manual(values=c("#40B5AD", "#6F8FAF")) +
+  labs(y = "Order", x = "Natural vs Artificial Site (Log fold change)", color = "Site type") + 
+  #theme(strip.background = element_rect(fill="white")) +
+  scale_color_manual(values=mycolors(2)) +
+  theme(axis.title.x = element_text(size = 14)) +
+  theme(axis.title.y = element_text(size = 14)) +
+  theme(axis.text.y = element_text(size=8)) +
+  theme(axis.text.x = element_text(size =8)) +
+  #theme(strip.text.y = element_blank()) +
+  guides(color = guide_legend(keywidth = 0.2, , keyheight =.40, nrow=1)) +
+  #theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme(legend.text =element_text(size=12)) +
+  theme(legend.title = element_text(size=14)) +
+  #facet_grid(Order~., space ="free", scales="free", switch="y") +
+  theme(strip.background = element_blank()) +
+  theme(strip.text.y.left = element_text(angle =0 )) +
+  #theme(strip.text.y = element_text(size = 5)) +
+  geom_vline(xintercept = 0, 
+             color = "black", linewidth=.5)
+
+ancom_fig
+ggsave("/Users/aiko.abo.dominguez/Desktop/Spiny_lobster_project/R_code/figures/PAV1_ANCOM.png",
+     width = 4, height = 4, units = "in", dpi=300)
+```
